@@ -27,6 +27,9 @@ fn main() -> io::Result<()> {
     if std::env::args().any(|a| a == "--smoke") {
         return smoke_test();
     }
+    if std::env::args().any(|a| a == "--audio-setup") {
+        return audio_setup_check();
+    }
 
     let (cols, rows) = size().unwrap_or((80, 24));
     let mut game = Game::new(cols, rows);
@@ -89,11 +92,33 @@ fn run(
     }
 }
 
+fn audio_setup_check() -> io::Result<()> {
+    let started = Instant::now();
+    let _a = audio::Audio::new();
+    let elapsed = started.elapsed();
+    let cache = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join("Library/Caches/train-game"))
+        .unwrap();
+    println!("audio setup took {:?}", elapsed);
+    if cache.exists() {
+        println!("cache files in {}:", cache.display());
+        for entry in std::fs::read_dir(&cache)? {
+            let entry = entry?;
+            let meta = entry.metadata()?;
+            println!("  {:>8} bytes  {}", meta.len(), entry.file_name().to_string_lossy());
+        }
+    } else {
+        println!("cache dir does not exist");
+    }
+    Ok(())
+}
+
 fn smoke_test() -> io::Result<()> {
     let mut game = Game::new(120, 40);
-    // Add a few cars via the public API so we exercise wrap-around with a
-    // longer-than-screen train.
-    for _ in 0..6 {
+    // 40 word completions = 20 cars across multiple trains (2 wheels per car,
+    // 8 cars per train). Exercises wrap-around with a longer-than-screen train
+    // and the multi-train layout.
+    for _ in 0..40 {
         for ch in game.target_word.clone().chars() {
             let _ = game.handle_letter(ch);
         }
@@ -105,11 +130,14 @@ fn smoke_test() -> io::Result<()> {
         renderer::render(&game, &mut buf)?;
         buf.clear();
     }
+    let total_cars: usize = game.trains.iter().map(|t| t.cars.len()).sum();
     println!(
-        "smoke ok — head_x={:.1} cycle={} cars={} smoke_particles={}",
+        "smoke ok — head_x={:.1} cycle={} trains={} cars={} wheels={} smoke_particles={}",
         game.head_x,
         game.cycle(),
-        game.middle_cars.len(),
+        game.trains.len(),
+        total_cars,
+        game.total_wheels(),
         game.smoke.len()
     );
     Ok(())
@@ -141,11 +169,11 @@ fn handle_key(
         KeyCode::Char(c) if c.is_ascii_alphabetic() => {
             let outcome = game.handle_letter(c);
             match outcome {
-                WordOutcome::Correct => {
+                WordOutcome::Correct | WordOutcome::Maxed => {
                     if let Some(a) = audio.as_mut() {
-                        a.yay();
+                        a.wuvva_wheel();
                     }
-                    // Delay announcing the next word so "yay" isn't cut off.
+                    // Delay announcing the next word so "wuvva wheel" isn't cut off.
                     let next_word = game.target_word.clone();
                     std::thread::Builder::new()
                         .spawn(move || {
