@@ -266,10 +266,17 @@ impl Game {
             return false;
         }
         let idx = self.cars.len();
-        self.cars.push(Car {
-            kind: CarKind::rotate(idx),
-            color: CarColor::rotate(idx),
-        });
+        // Insert right behind the engine (cars[0]) rather than right in
+        // front of the caboose (cars.push). Visually, the engine "pulls" a
+        // new car out — the chain extends backward toward the caboose
+        // rather than the caboose shoving back to make room.
+        self.cars.insert(
+            0,
+            Car {
+                kind: CarKind::rotate(idx),
+                color: CarColor::rotate(idx),
+            },
+        );
         self.last_celebrate = Some(Instant::now());
         true
     }

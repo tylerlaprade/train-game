@@ -13,6 +13,8 @@ pub struct Sprite {
 }
 
 // ── ENGINE ───────────────────────────────────────────────────────────────────
+// Bottom (wheel) row is solid track from col 0 so it joins seamlessly with
+// any car's wheel row to its left.
 pub const ENGINE: Sprite = Sprite {
     width: 40,
     rows: &[
@@ -23,7 +25,7 @@ pub const ENGINE: Sprite = Sprite {
         "             /  ___                    \\",
         "            |  |░░░|  STEAM  ___   *   |",
         "            |  |___|________|HL_|______|",
-        "             ==(O)====(O)====(O)====(O)=",
+        "===============(O)====(O)====(O)====(O)=",
     ],
 };
 
@@ -52,7 +54,7 @@ pub const BOXCAR: Sprite = Sprite {
         " | TRAIN  CO.    |",
         " |  ____    ____ |",
         " |_|░░░░|__|░░░░|_",
-        " =(O)========(O)==",
+        "==(O)========(O)==",
     ],
 };
 
@@ -66,7 +68,7 @@ pub const TANKER: Sprite = Sprite {
         "   |    FUEL    | ",
         "    \\__________/  ",
         " _______________ _",
-        " =(O)========(O)==",
+        "==(O)========(O)==",
     ],
 };
 
@@ -80,7 +82,7 @@ pub const HOPPER: Sprite = Sprite {
         " |░░░░░░░░░░░░░░░|",
         " |░░░░ COAL ░░░░░|",
         "  \\___________/__ ",
-        " =(O)========(O)==",
+        "==(O)========(O)==",
     ],
 };
 
@@ -94,7 +96,7 @@ pub const PASSENGER: Sprite = Sprite {
         " |░░ ░░ ░░ ░░ ░░|",
         " |              |",
         " |______________|_",
-        " =(O)========(O)==",
+        "==(O)========(O)==",
     ],
 };
 
@@ -108,7 +110,7 @@ pub const FLATCAR: Sprite = Sprite {
         "                  ",
         "                  ",
         "  ________________",
-        " =(O)========(O)==",
+        "==(O)========(O)==",
     ],
 };
 
@@ -122,7 +124,7 @@ pub const GONDOLA: Sprite = Sprite {
         "  ________________",
         " |              |",
         " |______________|_",
-        " =(O)========(O)==",
+        "==(O)========(O)==",
     ],
 };
 

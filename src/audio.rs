@@ -38,13 +38,15 @@ impl Audio {
         let horn = whistle.clone();
 
         // "WUVVA wheel" — toddler-mispronunciation of "another wheel".
-        // Stress lands on "wuv" via `say`'s inline `[[emph +]]` tag, with a
-        // brief comma pause before "wheel" so the second word is unambiguous.
+        // Stack every prosody knob `say` has: louder + slower + higher pitch
+        // + explicit emph on "wuvva", then the opposite on "wheel" so the
+        // stress lands cleanly on the first word (mirrors "anNOTHer wheel").
         // Filename versioned so prior installs regenerate.
         let yay = synth_fallback(
             &cache,
-            "wuvva_v2.aiff",
-            "[[emph +]] wuvva [[emph -]], wheel",
+            "wuvva_v3.aiff",
+            "[[rate 120]] [[volm 1.7]] [[pbas +10]] [[emph +]] wuvva [[emph -]] \
+             [[slnc 100]] [[volm 0.22]] [[rate 320]] [[pbas -8]] wheel",
             "Junior",
             200,
         );
