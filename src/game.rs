@@ -4,25 +4,21 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
-use crate::words;
-
-pub const WHEELS_PER_CAR: u8 = 2;
-pub const MAX_CARS_PER_TRAIN: usize = 8;
-pub const TRAIN_TOP_ROW_FROM_TOP: usize = 10;
-pub const TRAIN_VERTICAL_SPACING: usize = 1; // ground row between stacked trains
+pub const MAX_CARS: usize = 24;
 pub const SEG_HEIGHT: usize = 8;
-pub const PARTIAL_CAR_WIDTH: i32 = 18;
 pub const SMOKE_RISE: f32 = -8.0;
 pub const SMOKE_MAX_AGE: f32 = 3.0;
 pub const SMOKE_SPAWN_INTERVAL: f32 = 0.08;
-pub const TRAIN_SPEED_CELLS_PER_SEC: f32 = 18.0;
-/// How long after the last arrow-key event the train keeps moving. Must
-/// exceed the OS key-repeat initial delay (~500ms on macOS) so holding the
-/// key doesn't stall between the first press and the first auto-repeat.
+pub const TRAIN_SPEED_CELLS_PER_SEC: f32 = 32.0;
 pub const TRAIN_KEEP_MOVING_MS: u128 = 650;
 pub const HORN_FLASH_MS: u128 = 600;
 pub const CELEBRATE_MS: u128 = 900;
-pub const WRAP_GAP: i32 = 6;
+/// Small overshoot past the right edge before the engine wraps back to the
+/// left. Tuned to feel like "engine just goes off, then comes back".
+pub const SHORT_TRAIN_OVERSHOOT: i32 = 4;
+/// Gap between caboose exiting the right and engine re-emerging on the left,
+/// for trains longer than the screen.
+pub const LONG_TRAIN_TAIL_GAP: i32 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CarKind {
@@ -82,30 +78,6 @@ pub struct Car {
     pub color: CarColor,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct Train {
-    pub cars: Vec<Car>,
-    pub partial_wheels: u8,
-}
-
-impl Train {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn total_width(&self) -> i32 {
-        let mut w = crate::renderer::ENGINE.width as i32;
-        for car in &self.cars {
-            w += crate::renderer::car_sprite(car.kind).width as i32;
-        }
-        if self.partial_wheels > 0 {
-            w += PARTIAL_CAR_WIDTH;
-        }
-        w += crate::renderer::CABOOSE.width as i32;
-        w
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct Smoke {
     pub x: f32,
@@ -122,13 +94,10 @@ pub struct Game {
     pub head_x: f32,
     pub velocity: f32,
 
-    pub trains: Vec<Train>,
+    pub cars: Vec<Car>,
 
     pub smoke: Vec<Smoke>,
     smoke_spawn_accum: f32,
-
-    pub target_word: String,
-    pub typed: String,
 
     pub rng: SmallRng,
     pub last_tick: Instant,
@@ -136,32 +105,26 @@ pub struct Game {
     pub last_move: Option<Instant>,
     pub last_horn: Option<Instant>,
     pub last_celebrate: Option<Instant>,
-    pub last_wrong: Option<Instant>,
 
     pub quit: bool,
 }
 
 impl Game {
     pub fn new(cols: u16, rows: u16) -> Self {
-        let mut rng = SmallRng::from_entropy();
-        let word = words::random_word(&mut rng).to_string();
         let now = Instant::now();
         Self {
             screen_cols: cols,
             screen_rows: rows,
             head_x: 0.0,
             velocity: 0.0,
-            trains: vec![Train::new()],
+            cars: Vec::new(),
             smoke: Vec::new(),
             smoke_spawn_accum: 0.0,
-            target_word: word,
-            typed: String::new(),
-            rng,
+            rng: SmallRng::from_entropy(),
             last_tick: now,
             last_move: None,
             last_horn: None,
             last_celebrate: None,
-            last_wrong: None,
             quit: false,
         }
     }
@@ -170,47 +133,65 @@ impl Game {
         self.screen_cols = cols;
         self.screen_rows = rows;
         let c = self.cycle();
-        self.head_x = self.head_x.rem_euclid(c as f32);
-    }
-
-    pub fn cycle(&self) -> i32 {
-        self.max_train_width() + self.screen_cols as i32 + WRAP_GAP
-    }
-
-    pub fn max_train_width(&self) -> i32 {
-        self.trains.iter().map(Train::total_width).max().unwrap_or(0)
-    }
-
-    /// How many train rows the current terminal height can hold, given a
-    /// fixed help row at top and a 5-row word UI at the bottom.
-    pub fn max_trains(&self) -> usize {
-        let rows = self.screen_rows as usize;
-        let header = TRAIN_TOP_ROW_FROM_TOP;
-        let footer = 5;
-        let per_train = SEG_HEIGHT + TRAIN_VERTICAL_SPACING;
-        if rows < header + per_train + footer {
-            return 1;
+        if c > 0 {
+            self.head_x = self.head_x.rem_euclid(c as f32);
         }
-        let available = rows - header - footer;
-        (available / per_train).max(1)
     }
 
-    pub fn train_top_for(&self, train_idx: usize) -> usize {
-        TRAIN_TOP_ROW_FROM_TOP + train_idx * (SEG_HEIGHT + TRAIN_VERTICAL_SPACING)
+    /// Distance the head must travel (in cells) before wrapping back to 0.
+    ///
+    /// - **Short train** (fits on screen): wrap right after the engine
+    ///   pokes off the right edge. Short visual jolt is acceptable.
+    /// - **Long train** (wider than screen): wait until the caboose has
+    ///   fully exited the right plus a small gap, then re-emerge on the left.
+    pub fn cycle(&self) -> i32 {
+        let screen = self.screen_cols as i32;
+        let train = self.train_total_width();
+        if train <= screen {
+            // Engine pokes off the right by a few cells then wraps. There's
+            // a brief visual jolt (caboose teleports off-screen) — the user
+            // explicitly asked for "wrap as soon as engine goes off" over
+            // "wait for the whole train".
+            screen + SHORT_TRAIN_OVERSHOOT
+        } else {
+            // Wait until the caboose has fully cleared the right edge, then
+            // a small empty gap before the engine re-emerges on the left.
+            // Caboose's LEFT edge reaches the screen's RIGHT edge when
+            // head_x = screen + train - 1.
+            screen + train - 1 + LONG_TRAIN_TAIL_GAP
+        }
+    }
+
+    pub fn train_total_width(&self) -> i32 {
+        let mut w = crate::renderer::ENGINE.width as i32;
+        for car in &self.cars {
+            w += crate::renderer::car_sprite(car.kind).width as i32;
+        }
+        w += crate::renderer::CABOOSE.width as i32;
+        w
+    }
+
+    /// Top row of the train. Puts it ~40% down the screen so there's plenty
+    /// of sky for smoke and a grass apron below.
+    pub fn train_top(&self) -> usize {
+        let rows = self.screen_rows as usize;
+        let from_top = (rows as f32 * 0.4) as usize;
+        from_top.max(6).min(rows.saturating_sub(SEG_HEIGHT + 1))
     }
 
     pub fn engine_smokestack_world_x(&self) -> f32 {
-        // Smokestack column inside the engine sprite (the "____" at col 25-28).
         let smokestack_col_in_sprite = 27_i32;
         let engine_left = self.head_x - (crate::renderer::ENGINE.width as f32 - 1.0);
         engine_left + smokestack_col_in_sprite as f32
     }
 
     pub fn engine_smokestack_top_row(&self) -> i32 {
-        self.train_top_for(0) as i32
+        self.train_top() as i32
     }
 
-    pub fn tick(&mut self) {
+    /// Returns the number of cars added this tick (0 or 1 in practice).
+    /// Caller plays audio based on this.
+    pub fn tick(&mut self) -> u32 {
         let now = Instant::now();
         let dt = now.duration_since(self.last_tick).as_secs_f32().min(0.1);
         self.last_tick = now;
@@ -223,11 +204,25 @@ impl Game {
             }
         }
 
-        self.head_x += self.velocity * dt;
         let cycle = self.cycle() as f32;
-        if cycle > 0.0 {
-            self.head_x = self.head_x.rem_euclid(cycle);
-        }
+        let prev_head = self.head_x;
+        let unwrapped = prev_head + self.velocity * dt;
+        self.head_x = if cycle > 0.0 {
+            unwrapped.rem_euclid(cycle)
+        } else {
+            unwrapped
+        };
+
+        // Wrap-around event = one new car.
+        let cars_added = if cycle > 0.0
+            && self.velocity.abs() > 0.5
+            && ((self.velocity > 0.0 && unwrapped >= cycle)
+                || (self.velocity < 0.0 && unwrapped < 0.0))
+        {
+            if self.add_car() { 1 } else { 0 }
+        } else {
+            0
+        };
 
         self.smoke_spawn_accum += dt;
         while self.smoke_spawn_accum >= SMOKE_SPAWN_INTERVAL {
@@ -243,10 +238,11 @@ impl Game {
             s.age += dt;
             s.age < SMOKE_MAX_AGE
         });
+
+        cars_added
     }
 
     fn spawn_smoke_puff(&mut self) {
-        // Smoke comes only from the top (first) train's smokestack.
         let base_x = self.engine_smokestack_world_x();
         let base_y = self.engine_smokestack_top_row() as f32 - 0.5;
         let n = self.rng.gen_range(2..=4);
@@ -263,6 +259,19 @@ impl Game {
                 age: 0.0,
             });
         }
+    }
+
+    fn add_car(&mut self) -> bool {
+        if self.cars.len() >= MAX_CARS {
+            return false;
+        }
+        let idx = self.cars.len();
+        self.cars.push(Car {
+            kind: CarKind::rotate(idx),
+            color: CarColor::rotate(idx),
+        });
+        self.last_celebrate = Some(Instant::now());
+        true
     }
 
     pub fn nudge_forward(&mut self) {
@@ -290,79 +299,4 @@ impl Game {
     pub fn celebrating(&self) -> bool {
         matches!(self.last_celebrate, Some(t) if t.elapsed().as_millis() < CELEBRATE_MS)
     }
-
-    pub fn wrong_flash(&self) -> bool {
-        matches!(self.last_wrong, Some(t) if t.elapsed().as_millis() < 300)
-    }
-
-    pub fn total_wheels(&self) -> usize {
-        self.trains
-            .iter()
-            .map(|t| t.cars.len() * WHEELS_PER_CAR as usize + t.partial_wheels as usize)
-            .sum()
-    }
-
-    pub fn handle_letter(&mut self, ch: char) -> WordOutcome {
-        let ch = ch.to_ascii_lowercase();
-        let expected = self.target_word.as_bytes()[self.typed.len()] as char;
-        if ch == expected {
-            self.typed.push(ch);
-            if self.typed.len() == self.target_word.len() {
-                let added = self.complete_word();
-                if added {
-                    WordOutcome::Correct
-                } else {
-                    WordOutcome::Maxed
-                }
-            } else {
-                WordOutcome::Progress
-            }
-        } else {
-            self.typed.clear();
-            self.last_wrong = Some(Instant::now());
-            WordOutcome::Wrong
-        }
-    }
-
-    /// Adds one wheel. Returns true if a wheel was actually added (i.e.,
-    /// there was capacity), false if all trains were full and there was no
-    /// vertical room to start a new one.
-    fn complete_word(&mut self) -> bool {
-        self.typed.clear();
-        self.target_word = words::random_word(&mut self.rng).to_string();
-        self.last_celebrate = Some(Instant::now());
-
-        let last_is_full = self
-            .trains
-            .last()
-            .is_some_and(|t| t.cars.len() >= MAX_CARS_PER_TRAIN);
-        if last_is_full {
-            if self.trains.len() >= self.max_trains() {
-                return false;
-            }
-            self.trains.push(Train::new());
-        }
-
-        let total_cars_before: usize = self.trains.iter().map(|t| t.cars.len()).sum();
-        let current = self.trains.last_mut().expect("at least one train");
-        current.partial_wheels += 1;
-        if current.partial_wheels >= WHEELS_PER_CAR {
-            current.partial_wheels = 0;
-            current.cars.push(Car {
-                kind: CarKind::rotate(total_cars_before),
-                color: CarColor::rotate(total_cars_before),
-            });
-        }
-        true
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WordOutcome {
-    Progress,
-    /// Word completed and a wheel was added.
-    Correct,
-    /// Word completed but no room for more wheels (all trains full).
-    Maxed,
-    Wrong,
 }

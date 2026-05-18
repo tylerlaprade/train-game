@@ -12,9 +12,8 @@ use crossterm::terminal::{
 mod audio;
 mod game;
 mod renderer;
-mod words;
 
-use game::{Game, WordOutcome};
+use game::Game;
 
 const FRAME_DURATION: Duration = Duration::from_millis(33);
 
@@ -35,10 +34,6 @@ fn main() -> io::Result<()> {
     let mut game = Game::new(cols, rows);
     let mut audio = audio::Audio::new();
 
-    if let Some(a) = audio.as_mut() {
-        a.speak(&game.target_word);
-    }
-
     let mut stdout = io::stdout();
     enable_raw_mode()?;
     execute!(stdout, EnterAlternateScreen, Hide, Clear(ClearType::All))?;
@@ -49,47 +44,6 @@ fn main() -> io::Result<()> {
     disable_raw_mode()?;
 
     result
-}
-
-fn run(
-    game: &mut Game,
-    audio: &mut Option<audio::Audio>,
-    stdout: &mut io::Stdout,
-) -> io::Result<()> {
-    let mut last_frame = Instant::now();
-
-    loop {
-        if game.quit {
-            return Ok(());
-        }
-
-        // Drain events that arrived since last frame.
-        while event::poll(Duration::from_millis(0))? {
-            match event::read()? {
-                Event::Key(k) if k.kind == KeyEventKind::Release => {}
-                Event::Key(k) => handle_key(k, game, audio),
-                Event::Resize(c, r) => {
-                    game.resize(c, r);
-                    execute!(stdout, Clear(ClearType::All))?;
-                }
-                _ => {}
-            }
-        }
-
-        game.tick();
-        if let Some(a) = audio.as_mut() {
-            a.tick_chugga(game.moving_recently());
-        }
-        renderer::render(game, stdout)?;
-
-        // Pace the loop. Sleep via event::poll so input still wakes us early.
-        let elapsed = last_frame.elapsed();
-        if elapsed < FRAME_DURATION {
-            let remaining = FRAME_DURATION - elapsed;
-            let _ = event::poll(remaining)?;
-        }
-        last_frame = Instant::now();
-    }
 }
 
 fn audio_setup_check() -> io::Result<()> {
@@ -114,33 +68,78 @@ fn audio_setup_check() -> io::Result<()> {
 }
 
 fn smoke_test() -> io::Result<()> {
-    let mut game = Game::new(120, 40);
-    // 40 word completions = 20 cars across multiple trains (2 wheels per car,
-    // 8 cars per train). Exercises wrap-around with a longer-than-screen train
-    // and the multi-train layout.
-    for _ in 0..40 {
-        for ch in game.target_word.clone().chars() {
-            let _ = game.handle_letter(ch);
-        }
-    }
-    game.nudge_forward();
+    let mut game = Game::new(200, 40);
     let mut buf: Vec<u8> = Vec::new();
+
+    // 1) Force wrap-arounds to exercise the car-on-wrap path.
+    let mut added = 0_u32;
+    for _ in 0..30 {
+        game.head_x = game.cycle() as f32 + 1.0;
+        game.nudge_forward();
+        added += game.tick();
+        renderer::render(&game, &mut buf)?;
+        buf.clear();
+    }
+
+    // 2) Run a normal-time loop to exercise tick() + smoke physics.
+    game.nudge_forward();
     for _ in 0..200 {
         game.tick();
         renderer::render(&game, &mut buf)?;
         buf.clear();
     }
-    let total_cars: usize = game.trains.iter().map(|t| t.cars.len()).sum();
+
     println!(
-        "smoke ok — head_x={:.1} cycle={} trains={} cars={} wheels={} smoke_particles={}",
-        game.head_x,
+        "smoke ok — cars={} added_by_wraps={} cycle={} (train_w={}, screen_w=200) smoke={}",
+        game.cars.len(),
+        added,
         game.cycle(),
-        game.trains.len(),
-        total_cars,
-        game.total_wheels(),
+        game.train_total_width(),
         game.smoke.len()
     );
     Ok(())
+}
+
+fn run(
+    game: &mut Game,
+    audio: &mut Option<audio::Audio>,
+    stdout: &mut io::Stdout,
+) -> io::Result<()> {
+    let mut last_frame = Instant::now();
+
+    loop {
+        if game.quit {
+            return Ok(());
+        }
+
+        while event::poll(Duration::from_millis(0))? {
+            match event::read()? {
+                Event::Key(k) if k.kind == KeyEventKind::Release => {}
+                Event::Key(k) => handle_key(k, game, audio),
+                Event::Resize(c, r) => {
+                    game.resize(c, r);
+                    execute!(stdout, Clear(ClearType::All))?;
+                }
+                _ => {}
+            }
+        }
+
+        let cars_added = game.tick();
+        if let Some(a) = audio.as_mut() {
+            a.tick_chugga(game.moving_recently());
+            if cars_added > 0 {
+                a.wuvva_wheel();
+            }
+        }
+        renderer::render(game, stdout)?;
+
+        let elapsed = last_frame.elapsed();
+        if elapsed < FRAME_DURATION {
+            let remaining = FRAME_DURATION - elapsed;
+            let _ = event::poll(remaining)?;
+        }
+        last_frame = Instant::now();
+    }
 }
 
 fn handle_key(
@@ -156,47 +155,13 @@ fn handle_key(
     }
 
     match k.code {
-        KeyCode::Esc => game.quit = true,
+        KeyCode::Esc | KeyCode::Char('q' | 'Q') => game.quit = true,
         KeyCode::Right => game.nudge_forward(),
         KeyCode::Left => game.nudge_backward(),
         KeyCode::Char(' ') => {
             game.horn();
             if let Some(a) = audio.as_mut() {
                 a.horn();
-            }
-        }
-        KeyCode::Char('q' | 'Q') => game.quit = true,
-        KeyCode::Char(c) if c.is_ascii_alphabetic() => {
-            let outcome = game.handle_letter(c);
-            match outcome {
-                WordOutcome::Correct | WordOutcome::Maxed => {
-                    if let Some(a) = audio.as_mut() {
-                        a.wuvva_wheel();
-                    }
-                    // Delay announcing the next word so "wuvva wheel" isn't cut off.
-                    let next_word = game.target_word.clone();
-                    std::thread::Builder::new()
-                        .spawn(move || {
-                            std::thread::sleep(Duration::from_millis(1100));
-                            let _ = std::process::Command::new("say")
-                                .arg("-v")
-                                .arg("Junior")
-                                .arg("-r")
-                                .arg("180")
-                                .arg(next_word)
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .status();
-                        })
-                        .ok();
-                }
-                WordOutcome::Wrong => {
-                    if let Some(a) = audio.as_mut() {
-                        a.nope();
-                        a.speak(&game.target_word);
-                    }
-                }
-                WordOutcome::Progress => {}
             }
         }
         _ => {}

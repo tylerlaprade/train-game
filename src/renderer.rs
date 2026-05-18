@@ -5,9 +5,7 @@ use crossterm::queue;
 use crossterm::style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor};
 use crossterm::terminal::{Clear, ClearType};
 
-use crate::game::{
-    CarColor, CarKind, Game, PARTIAL_CAR_WIDTH, SEG_HEIGHT, TRAIN_TOP_ROW_FROM_TOP, Train,
-};
+use crate::game::{CarColor, CarKind, Game, MAX_CARS, SEG_HEIGHT};
 
 pub struct Sprite {
     pub width: usize,
@@ -161,6 +159,7 @@ struct CellFmt {
 
 const SKY: Color = Color::Rgb { r: 90, g: 150, b: 200 };
 const GROUND: Color = Color::Rgb { r: 60, g: 100, b: 40 };
+const GROUND_DARK: Color = Color::Rgb { r: 45, g: 80, b: 30 };
 const TRACK: Color = Color::Rgb { r: 90, g: 70, b: 50 };
 
 const BLANK: CellFmt = CellFmt {
@@ -172,12 +171,12 @@ const BLANK: CellFmt = CellFmt {
 pub fn render(game: &Game, out: &mut impl Write) -> std::io::Result<()> {
     let cols = game.screen_cols as usize;
     let rows = game.screen_rows as usize;
-    if cols < 50 || rows < 18 {
+    if cols < 50 || rows < 14 {
         queue!(
             out,
             Clear(ClearType::All),
             cursor::MoveTo(0, 0),
-            Print("Make the terminal a bit bigger (>=50x18) for the train!")
+            Print("Make the terminal a bit bigger (>=50x14) for the train!")
         )?;
         out.flush()?;
         return Ok(());
@@ -186,33 +185,34 @@ pub fn render(game: &Game, out: &mut impl Write) -> std::io::Result<()> {
     let mut grid = vec![BLANK; cols * rows];
     let idx = |r: usize, c: usize| r * cols + c;
 
-    // Paint the whole screen with sky first; ground bands get repainted
-    // under each train after.
+    let train_top = game.train_top();
+    let horizon = train_top + SEG_HEIGHT;
+
+    // Sky above horizon, grass below.
     for r in 0..rows {
+        let bg = if r < horizon {
+            SKY
+        } else if r == horizon {
+            GROUND
+        } else {
+            // Darker green further down to give a sense of depth.
+            let depth = (r - horizon) as f32 / (rows - horizon).max(1) as f32;
+            blend(GROUND, GROUND_DARK, depth)
+        };
+        let ch = if r == horizon { '~' } else { ' ' };
+        let fg = if r == horizon {
+            Color::Rgb { r: 80, g: 60, b: 30 }
+        } else {
+            Color::Reset
+        };
         for c in 0..cols {
-            grid[idx(r, c)] = CellFmt { ch: ' ', fg: Color::Reset, bg: SKY };
+            grid[idx(r, c)] = CellFmt { ch, fg, bg };
         }
     }
 
-    // Ground band under each train.
-    for (train_idx, _train) in game.trains.iter().enumerate() {
-        let top = game.train_top_for(train_idx);
-        let ground = top + SEG_HEIGHT;
-        if ground < rows {
-            for c in 0..cols {
-                grid[idx(ground, c)] = CellFmt {
-                    ch: '~',
-                    fg: Color::Rgb { r: 80, g: 60, b: 30 },
-                    bg: GROUND,
-                };
-            }
-        }
-    }
-
-    draw_all_trains(&mut grid, cols, rows, game);
-    draw_smoke(&mut grid, cols, rows, game);
-    draw_word_ui(&mut grid, cols, rows, game);
-    draw_help(&mut grid, cols, rows, game);
+    draw_train(&mut grid, cols, rows, train_top, game);
+    draw_smoke(&mut grid, cols, rows, train_top, game);
+    draw_top_bar(&mut grid, cols, rows, game);
 
     queue!(out, cursor::MoveTo(0, 0))?;
     let mut cur_fg = Color::Reset;
@@ -238,50 +238,36 @@ pub fn render(game: &Game, out: &mut impl Write) -> std::io::Result<()> {
     Ok(())
 }
 
-fn draw_all_trains(grid: &mut [CellFmt], cols: usize, rows: usize, game: &Game) {
-    for (train_idx, train) in game.trains.iter().enumerate() {
-        let top_y = game.train_top_for(train_idx);
-        if top_y + SEG_HEIGHT > rows {
-            break;
-        }
-        draw_single_train(grid, cols, rows, train, top_y, game);
-    }
-
-    if game.horn_active() {
-        // Speech bubble above engine of the top train.
-        let bubble = "TOOT TOOT!";
-        let cycle = game.cycle();
-        let head_x = game.head_x.floor() as i32;
-        let head_x = head_x.rem_euclid(cycle.max(1));
-        let y = TRAIN_TOP_ROW_FROM_TOP.saturating_sub(2);
-        for shift in [-cycle, 0, cycle] {
-            let x = head_x + shift - bubble.len() as i32;
-            put_text(
-                grid,
-                cols,
-                rows,
-                bubble,
-                x,
-                y,
-                Color::White,
-                Color::Rgb { r: 200, g: 30, b: 30 },
-            );
-        }
+fn blend(a: Color, b: Color, t: f32) -> Color {
+    let (ar, ag, ab) = rgb_of(a);
+    let (br, bg, bb) = rgb_of(b);
+    let t = t.clamp(0.0, 1.0);
+    Color::Rgb {
+        r: lerp(ar, br, t),
+        g: lerp(ag, bg, t),
+        b: lerp(ab, bb, t),
     }
 }
 
-fn draw_single_train(
-    grid: &mut [CellFmt],
-    cols: usize,
-    rows: usize,
-    train: &Train,
-    top_y: usize,
-    game: &Game,
-) {
+fn rgb_of(c: Color) -> (u8, u8, u8) {
+    if let Color::Rgb { r, g, b } = c {
+        (r, g, b)
+    } else {
+        (255, 255, 255)
+    }
+}
+
+fn lerp(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t).round() as u8
+}
+
+fn draw_train(grid: &mut [CellFmt], cols: usize, rows: usize, train_top: usize, game: &Game) {
     let cycle = game.cycle();
     let head_x = game.head_x.floor() as i32;
     let head_x = head_x.rem_euclid(cycle.max(1));
 
+    // We draw the train at three cycle offsets to handle wrap-around at
+    // both edges of the screen seamlessly.
     for shift in [-cycle, 0, cycle] {
         let mut right = head_x + shift;
 
@@ -294,11 +280,11 @@ fn draw_single_train(
             engine,
             Color::Rgb { r: 60, g: 60, b: 70 },
             left,
-            top_y,
+            train_top,
         );
         right = left - 1;
 
-        for car in &train.cars {
+        for car in &game.cars {
             let sprite = car_sprite(car.kind);
             let left = right - (sprite.width as i32 - 1);
             draw_sprite(
@@ -308,69 +294,33 @@ fn draw_single_train(
                 sprite,
                 car_color_to_term(car.color),
                 left,
-                top_y,
+                train_top,
             );
-            right = left - 1;
-        }
-
-        if train.partial_wheels > 0 {
-            let left = right - (PARTIAL_CAR_WIDTH - 1);
-            draw_partial_wheels(grid, cols, rows, train.partial_wheels, left, top_y);
             right = left - 1;
         }
 
         let caboose = &CABOOSE;
         let left = right - (caboose.width as i32 - 1);
-        draw_sprite(grid, cols, rows, caboose, Color::Red, left, top_y);
+        draw_sprite(grid, cols, rows, caboose, Color::Red, left, train_top);
     }
-}
 
-const WHEEL_X_POSITIONS: &[usize] = &[2, 13];
-const PARTIAL_TEMPLATE: &str = " =(O)========(O)==";
-
-fn draw_partial_wheels(
-    grid: &mut [CellFmt],
-    cols: usize,
-    rows: usize,
-    n_wheels: u8,
-    left_x: i32,
-    top_y: usize,
-) {
-    let wheel_row = top_y + 7;
-    if wheel_row >= rows {
-        return;
-    }
-    // Draw continuous track under the entire partial slot.
-    for c_off in 0..PARTIAL_CAR_WIDTH {
-        let x = left_x + c_off;
-        if x < 0 || x >= cols as i32 {
-            continue;
-        }
-        grid[wheel_row * cols + x as usize] = CellFmt {
-            ch: '=',
-            fg: TRACK,
-            bg: bg_under_train(wheel_row, top_y),
-        };
-    }
-    // Stamp the visible wheels on top of the track.
-    for (i, &wheel_x) in WHEEL_X_POSITIONS.iter().enumerate() {
-        if i >= n_wheels as usize {
-            break;
-        }
-        for (c_off, ch) in "(O)".chars().enumerate() {
-            let x = left_x + wheel_x as i32 + c_off as i32;
-            if x < 0 || x >= cols as i32 {
-                continue;
-            }
-            let fg = if ch == 'O' { Color::Black } else { Color::DarkGrey };
-            grid[wheel_row * cols + x as usize] = CellFmt {
-                ch,
-                fg,
-                bg: bg_under_train(wheel_row, top_y),
-            };
+    if game.horn_active() {
+        let bubble = "TOOT TOOT!";
+        for shift in [-cycle, 0, cycle] {
+            let x = head_x + shift - bubble.len() as i32;
+            let y = train_top.saturating_sub(2);
+            put_text(
+                grid,
+                cols,
+                rows,
+                bubble,
+                x,
+                y,
+                Color::White,
+                Color::Rgb { r: 200, g: 30, b: 30 },
+            );
         }
     }
-    let _ = PARTIAL_TEMPLATE; // documentation reference
 }
 
 fn draw_sprite(
@@ -430,12 +380,11 @@ fn char_visual(ch: char, base: Color) -> (char, Color) {
     }
 }
 
-fn draw_smoke(grid: &mut [CellFmt], cols: usize, _rows: usize, game: &Game) {
-    let sky_floor = TRAIN_TOP_ROW_FROM_TOP;
+fn draw_smoke(grid: &mut [CellFmt], cols: usize, _rows: usize, train_top: usize, game: &Game) {
     for s in &game.smoke {
         let x = s.x.round() as i32;
         let y = s.y.round() as i32;
-        if y < 1 || y as usize >= sky_floor {
+        if y < 1 || y >= train_top as i32 {
             continue;
         }
         let (ch, fg) = smoke_visual(s.age);
@@ -486,66 +435,25 @@ fn put_text(
     }
 }
 
-fn draw_word_ui(grid: &mut [CellFmt], cols: usize, rows: usize, game: &Game) {
-    let panel_top = rows.saturating_sub(5);
-
-    let bar_bg = if game.celebrating() {
-        Color::Rgb { r: 30, g: 120, b: 30 }
-    } else if game.wrong_flash() {
-        Color::Rgb { r: 120, g: 30, b: 30 }
+fn draw_top_bar(grid: &mut [CellFmt], cols: usize, rows: usize, game: &Game) {
+    let bg = if game.celebrating() {
+        Color::Rgb { r: 30, g: 140, b: 30 }
     } else {
-        Color::Rgb { r: 25, g: 25, b: 35 }
+        SKY
     };
-    for r in panel_top..rows {
-        for c in 0..cols {
-            grid[r * cols + c] = CellFmt { ch: ' ', fg: Color::White, bg: bar_bg };
-        }
+    for c in 0..cols {
+        grid[c] = CellFmt { ch: ' ', fg: Color::White, bg };
     }
-
-    let wheels = game.total_wheels();
-    let prompt = if game.celebrating() {
-        format!(
-            "  WUVVA WHEEL!  Wheels: {wheels}   Trains: {}/{}",
-            game.trains.len(),
-            game.max_trains()
-        )
+    let cars = game.cars.len();
+    let left = format!(" </> drive   SPACE toot   ESC quit");
+    let right = if game.celebrating() {
+        format!("WUVVA wheel!  Cars: {cars}/{MAX_CARS} ")
     } else {
-        format!(
-            "  Type the word:                  Wheels: {wheels}   Trains: {}/{}",
-            game.trains.len(),
-            game.max_trains()
-        )
+        format!("Cars: {cars}/{MAX_CARS} ")
     };
-    put_text(grid, cols, rows, &prompt, 2, panel_top, Color::White, bar_bg);
-
-    // The target word, in plain readable letters, with the typed-so-far
-    // letters bright green and the rest bright yellow. Spaced out so it
-    // reads as 3 distinct letters.
-    let big_y = panel_top + 2;
-    let letters: Vec<char> = game.target_word.chars().collect();
-    let spacing = 4; // cols between letter centers
-    let total_w = letters.len().saturating_sub(1) * spacing + 1;
-    let start_x = (cols.saturating_sub(total_w)) as i32 / 2;
-    for (i, ch) in letters.iter().enumerate() {
-        let done = i < game.typed.len();
-        let color = if done { Color::Green } else { Color::Yellow };
-        let upper = ch.to_ascii_uppercase();
-        put_text(
-            grid,
-            cols,
-            rows,
-            &format!(" {upper} "),
-            start_x + (i * spacing) as i32 - 1,
-            big_y,
-            color,
-            bar_bg,
-        );
-    }
-}
-
-fn draw_help(grid: &mut [CellFmt], cols: usize, rows: usize, _game: &Game) {
-    let help = " </> drive   SPACE toot   type the spoken word to add a wheel   ESC quit";
-    put_text(grid, cols, rows, help, 0, 0, Color::White, SKY);
+    put_text(grid, cols, rows, &left, 0, 0, Color::White, bg);
+    let right_x = cols as i32 - right.chars().count() as i32;
+    put_text(grid, cols, rows, &right, right_x.max(0), 0, Color::White, bg);
 }
 
 #[allow(dead_code)]

@@ -37,9 +37,17 @@ impl Audio {
         // Horn: a short, snappy version of the whistle (or just the whistle).
         let horn = whistle.clone();
 
-        // "wuvva wheel" — toddler-mispronunciation of "another wheel". Played
-        // each time a wheel is added (every word completion).
-        let yay = synth_fallback(&cache, "wuvva.aiff", "wuvva wheel!", "Junior", 200);
+        // "WUVVA wheel" — toddler-mispronunciation of "another wheel".
+        // Stress lands on "wuv" via `say`'s inline `[[emph +]]` tag, with a
+        // brief comma pause before "wheel" so the second word is unambiguous.
+        // Filename versioned so prior installs regenerate.
+        let yay = synth_fallback(
+            &cache,
+            "wuvva_v2.aiff",
+            "[[emph +]] wuvva [[emph -]], wheel",
+            "Junior",
+            200,
+        );
         let nope = synth_fallback(&cache, "nope.aiff", "uh oh", "Junior", 200);
 
         Some(Self {
@@ -105,12 +113,14 @@ impl Audio {
         let _ = spawn_afplay_quiet(&self.yay, 1.0);
     }
 
+    #[allow(dead_code)]
     pub fn nope(&mut self) {
         let _ = spawn_afplay_quiet(&self.nope, 1.0);
     }
 
-    /// Speak arbitrary text (the current target word) so a pre-reading
-    /// toddler can hear what to type. Cancels any prior speech.
+    /// Speak arbitrary text. Currently unused (kept in case we wire up a
+    /// post-action announcement again). Cancels any prior speech.
+    #[allow(dead_code)]
     pub fn speak(&mut self, text: &str) {
         if let Some(mut c) = self.speak_child.take() {
             let _ = c.kill();
