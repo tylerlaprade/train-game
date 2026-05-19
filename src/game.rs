@@ -5,7 +5,7 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
 pub const MAX_CARS: usize = 24;
-pub const SEG_HEIGHT: usize = 8;
+pub const SEG_HEIGHT: usize = 14;
 pub const SMOKE_RISE: f32 = -8.0;
 pub const SMOKE_MAX_AGE: f32 = 3.0;
 pub const SMOKE_SPAWN_INTERVAL: f32 = 0.08;
@@ -13,11 +13,8 @@ pub const TRAIN_SPEED_CELLS_PER_SEC: f32 = 32.0;
 pub const TRAIN_KEEP_MOVING_MS: u128 = 650;
 pub const HORN_FLASH_MS: u128 = 600;
 pub const CELEBRATE_MS: u128 = 900;
-/// Small overshoot past the right edge before the engine wraps back to the
-/// left. Tuned to feel like "engine just goes off, then comes back".
-pub const SHORT_TRAIN_OVERSHOOT: i32 = 4;
 /// Gap between caboose exiting the right and engine re-emerging on the left,
-/// for trains longer than the screen.
+/// so wrap-around happens only while the whole train is off-screen.
 pub const LONG_TRAIN_TAIL_GAP: i32 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +97,7 @@ pub struct Game {
     smoke_spawn_accum: f32,
 
     pub rng: SmallRng,
+    pub started_at: Instant,
     pub last_tick: Instant,
 
     pub last_move: Option<Instant>,
@@ -121,6 +119,7 @@ impl Game {
             smoke: Vec::new(),
             smoke_spawn_accum: 0.0,
             rng: SmallRng::from_entropy(),
+            started_at: now,
             last_tick: now,
             last_move: None,
             last_horn: None,
@@ -138,28 +137,15 @@ impl Game {
         }
     }
 
-    /// Distance the head must travel (in cells) before wrapping back to 0.
-    ///
-    /// - **Short train** (fits on screen): wrap right after the engine
-    ///   pokes off the right edge. Short visual jolt is acceptable.
-    /// - **Long train** (wider than screen): wait until the caboose has
-    ///   fully exited the right plus a small gap, then re-emerge on the left.
+    /// Distance the head must travel before wrapping back to 0.
+    /// Wait until the caboose has fully cleared the right edge so adding a
+    /// car never snaps visible cars back to the left side of the screen.
     pub fn cycle(&self) -> i32 {
         let screen = self.screen_cols as i32;
         let train = self.train_total_width();
-        if train <= screen {
-            // Engine pokes off the right by a few cells then wraps. There's
-            // a brief visual jolt (caboose teleports off-screen) — the user
-            // explicitly asked for "wrap as soon as engine goes off" over
-            // "wait for the whole train".
-            screen + SHORT_TRAIN_OVERSHOOT
-        } else {
-            // Wait until the caboose has fully cleared the right edge, then
-            // a small empty gap before the engine re-emerges on the left.
-            // Caboose's LEFT edge reaches the screen's RIGHT edge when
-            // head_x = screen + train - 1.
-            screen + train - 1 + LONG_TRAIN_TAIL_GAP
-        }
+        // Caboose's LEFT edge reaches the screen's RIGHT edge when
+        // head_x = screen + train - 1.
+        screen + train - 1 + LONG_TRAIN_TAIL_GAP
     }
 
     pub fn train_total_width(&self) -> i32 {
@@ -180,7 +166,7 @@ impl Game {
     }
 
     pub fn engine_smokestack_world_x(&self) -> f32 {
-        let smokestack_col_in_sprite = 27_i32;
+        let smokestack_col_in_sprite = 49_i32;
         let engine_left = self.head_x - (crate::renderer::ENGINE.width as f32 - 1.0);
         engine_left + smokestack_col_in_sprite as f32
     }
@@ -213,12 +199,8 @@ impl Game {
             unwrapped
         };
 
-        // Wrap-around event = one new car.
-        let cars_added = if cycle > 0.0
-            && self.velocity.abs() > 0.5
-            && ((self.velocity > 0.0 && unwrapped >= cycle)
-                || (self.velocity < 0.0 && unwrapped < 0.0))
-        {
+        // Forward wrap-around event = one new car.
+        let cars_added = if cycle > 0.0 && self.velocity > 0.5 && unwrapped >= cycle {
             if self.add_car() { 1 } else { 0 }
         } else {
             0
@@ -305,5 +287,34 @@ impl Game {
 
     pub fn celebrating(&self) -> bool {
         matches!(self.last_celebrate, Some(t) if t.elapsed().as_millis() < CELEBRATE_MS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Game, LONG_TRAIN_TAIL_GAP};
+    use crate::game::TRAIN_SPEED_CELLS_PER_SEC;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn cycle_waits_until_short_train_is_fully_offscreen() {
+        let game = Game::new(200, 40);
+
+        assert_eq!(
+            game.cycle(),
+            game.screen_cols as i32 + game.train_total_width() - 1 + LONG_TRAIN_TAIL_GAP
+        );
+    }
+
+    #[test]
+    fn backward_wrap_does_not_add_car() {
+        let mut game = Game::new(200, 40);
+
+        game.head_x = 0.1;
+        game.velocity = -TRAIN_SPEED_CELLS_PER_SEC;
+        game.last_tick = Instant::now() - Duration::from_secs(1);
+
+        assert_eq!(game.tick(), 0);
+        assert_eq!(game.cars.len(), 0);
     }
 }
