@@ -251,8 +251,6 @@ struct SkyState {
     phase_time: f32,
     rain: f32,
     stars: f32,
-    sun: f32,
-    moon: f32,
 }
 
 const BLANK: CellFmt = CellFmt {
@@ -319,7 +317,7 @@ impl Renderer {
 
         draw_sky(&mut self.grid, cols, rows, horizon, sky);
         draw_clouds(&mut self.grid, cols, rows, horizon, sky);
-        draw_sun_moon_and_stars(&mut self.grid, cols, rows, horizon, sky);
+        draw_stars(&mut self.grid, cols, horizon, sky);
         draw_rain(&mut self.grid, cols, rows, horizon, sky);
 
         draw_train(&mut self.grid, cols, rows, train_top, game);
@@ -460,8 +458,6 @@ fn sky_state(elapsed: f32) -> SkyState {
         phase_time,
         rain: bell(phase, 0.43, 0.10),
         stars: smoothstep((phase - 0.67) / 0.08) * (1.0 - smoothstep((phase - 0.94) / 0.05)),
-        sun: (1.0 - smoothstep((phase - 0.58) / 0.10)) * smoothstep((phase + 0.04) / 0.10),
-        moon: smoothstep((phase - 0.66) / 0.08) * (1.0 - smoothstep((phase - 0.95) / 0.05)),
     }
 }
 
@@ -576,95 +572,24 @@ fn draw_cloud(
     }
 }
 
-fn draw_sun_moon_and_stars(
-    grid: &mut [CellFmt],
-    cols: usize,
-    rows: usize,
-    horizon: usize,
-    sky: SkyState,
-) {
-    if sky.stars > 0.05 {
-        let star_rows = horizon.saturating_sub(2).max(1);
-        for i in 0..(cols / 5).max(12) {
-            let x = (i * 37 + 11) % cols;
-            let y = 1 + ((i * 17 + 5) % star_rows);
-            if y >= horizon {
-                continue;
-            }
-            let ch = if i % 4 == 0 { '*' } else { '.' };
-            let fg = blend(sky.palette.top, rgb(245, 245, 210), sky.stars);
-            grid[y * cols + x] = CellFmt {
-                ch,
-                fg,
-                bg: grid[y * cols + x].bg,
-            };
-        }
+fn draw_stars(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState) {
+    if sky.stars <= 0.05 {
+        return;
     }
-
-    if sky.sun > 0.05 {
-        let day = (sky.phase_time / (SKY_CYCLE_SECS * 0.58)).clamp(0.0, 1.0);
-        let x = (cols as f32 * 0.78) as i32;
-        let arc = (std::f32::consts::PI * day).sin();
-        let y = (horizon as f32 * (0.70 - 0.50 * arc)).max(1.0) as usize;
-        draw_lamp(
-            grid,
-            cols,
-            rows,
-            x,
-            y,
-            rgb(255, 225, 70),
-            &[" \\|/ ", "- * -", " /|\\ "],
-        );
-    }
-
-    if sky.moon > 0.05 {
-        let night = (((sky.phase_time / SKY_CYCLE_SECS) - 0.66) / 0.29).clamp(0.0, 1.0);
-        let x = (cols as f32 * 0.22) as i32;
-        let arc = (std::f32::consts::PI * night).sin();
-        let y = (horizon as f32 * (0.58 - 0.35 * arc)).max(1.0) as usize;
-        draw_lamp(
-            grid,
-            cols,
-            rows,
-            x,
-            y,
-            rgb(235, 235, 210),
-            &["  _", " / ", " \\_"],
-        );
-    }
-}
-
-fn draw_lamp(
-    grid: &mut [CellFmt],
-    cols: usize,
-    rows: usize,
-    center_x: i32,
-    center_y: usize,
-    fg: Color,
-    rows_src: &[&str],
-) {
-    let top = center_y.saturating_sub(rows_src.len() / 2);
-    for (r_off, row) in rows_src.iter().enumerate() {
-        let y = top + r_off;
-        if y >= rows {
+    let star_rows = horizon.saturating_sub(2).max(1);
+    for i in 0..(cols / 5).max(12) {
+        let x = (i * 37 + 11) % cols;
+        let y = 1 + ((i * 17 + 5) % star_rows);
+        if y >= horizon {
             continue;
         }
-        let left = center_x - (row.chars().count() as i32 / 2);
-        for (c_off, ch) in row.chars().enumerate() {
-            if ch == ' ' {
-                continue;
-            }
-            let x = left + c_off as i32;
-            if x < 0 || x >= cols as i32 {
-                continue;
-            }
-            let i = y * cols + x as usize;
-            grid[i] = CellFmt {
-                ch,
-                fg,
-                bg: grid[i].bg,
-            };
-        }
+        let ch = if i % 4 == 0 { '*' } else { '.' };
+        let fg = blend(sky.palette.top, rgb(245, 245, 210), sky.stars);
+        grid[y * cols + x] = CellFmt {
+            ch,
+            fg,
+            bg: grid[y * cols + x].bg,
+        };
     }
 }
 
@@ -967,7 +892,7 @@ fn draw_top_bar(grid: &mut [CellFmt], cols: usize, rows: usize, game: &Game, sky
         };
     }
     let cars = game.cars.len();
-    let left = format!(" ←/→ drive   SPACE toot");
+    let left = format!(" ←/→ drive   SPACE toot   EXIT or QUIT to exit");
     let right = if game.celebrating() {
         format!("Another wheel!  Cars: {cars}/{MAX_CARS} ")
     } else {
