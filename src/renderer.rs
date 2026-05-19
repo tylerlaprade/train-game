@@ -249,6 +249,7 @@ struct SkyPalette {
 struct SkyState {
     palette: SkyPalette,
     phase_time: f32,
+    elapsed: f32,
     rain: f32,
     stars: f32,
 }
@@ -318,6 +319,7 @@ impl Renderer {
         draw_sky(&mut self.grid, cols, rows, horizon, sky);
         draw_clouds(&mut self.grid, cols, rows, horizon, sky);
         draw_stars(&mut self.grid, cols, horizon, sky);
+        draw_terrain(&mut self.grid, cols, horizon, sky);
         draw_rain(&mut self.grid, cols, rows, horizon, sky);
 
         draw_train(&mut self.grid, cols, rows, train_top, game);
@@ -413,8 +415,8 @@ fn sky_state(elapsed: f32) -> SkyState {
         top: rgb(55, 75, 95),
         mid: rgb(80, 100, 120),
         horizon: rgb(115, 125, 130),
-        cloud: rgb(120, 125, 130),
-        cloud_shadow: rgb(70, 75, 82),
+        cloud: rgb(180, 185, 195),
+        cloud_shadow: rgb(140, 145, 155),
         ground: rgb(50, 90, 46),
         ground_dark: rgb(28, 58, 32),
     };
@@ -422,8 +424,8 @@ fn sky_state(elapsed: f32) -> SkyState {
         top: rgb(75, 70, 140),
         mid: rgb(210, 95, 100),
         horizon: rgb(255, 150, 70),
-        cloud: rgb(255, 175, 130),
-        cloud_shadow: rgb(155, 80, 105),
+        cloud: rgb(255, 200, 150),
+        cloud_shadow: rgb(230, 155, 115),
         ground: rgb(70, 90, 42),
         ground_dark: rgb(38, 52, 30),
     };
@@ -456,6 +458,7 @@ fn sky_state(elapsed: f32) -> SkyState {
     SkyState {
         palette,
         phase_time,
+        elapsed,
         rain: bell(phase, 0.43, 0.10),
         stars: smoothstep((phase - 0.67) / 0.08) * (1.0 - smoothstep((phase - 0.94) / 0.05)),
     }
@@ -566,6 +569,84 @@ fn draw_cloud(
             grid[i] = CellFmt {
                 ch,
                 fg,
+                bg: grid[i].bg,
+            };
+        }
+    }
+}
+
+fn draw_terrain(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState) {
+    if horizon < 3 {
+        return;
+    }
+    // Far ridge: pale (atmospheric perspective), low, slow scroll
+    draw_terrain_layer(
+        grid,
+        cols,
+        horizon,
+        blend(sky.palette.ground_dark, sky.palette.horizon, 0.40),
+        sky.elapsed * 0.6,
+        0.028,
+        1.0,
+        1.4,
+        0.5,
+    );
+    // Near hills: darker, taller, faster scroll
+    draw_terrain_layer(
+        grid,
+        cols,
+        horizon,
+        blend(sky.palette.ground_dark, rgb(0, 0, 0), 0.45),
+        sky.elapsed * 1.8,
+        0.052,
+        2.0,
+        2.0,
+        1.0,
+    );
+}
+
+fn draw_terrain_layer(
+    grid: &mut [CellFmt],
+    cols: usize,
+    horizon: usize,
+    color: Color,
+    phase: f32,
+    freq: f32,
+    base: f32,
+    amp: f32,
+    detail_amp: f32,
+) {
+    const STEPS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let max_height = horizon.saturating_sub(1);
+    if max_height == 0 {
+        return;
+    }
+    for x in 0..cols {
+        let xf = x as f32 + phase;
+        let h = base
+            + amp * 0.5 * (1.0 + (xf * freq).sin())
+            + detail_amp * 0.5 * (xf * freq * 3.1 + 1.3).sin();
+        if h <= 0.0 {
+            continue;
+        }
+        let height_int = (h as usize).min(max_height);
+        let frac = h - h.floor();
+        for k in 0..height_int {
+            let y = horizon - 1 - k;
+            let i = y * cols + x;
+            grid[i] = CellFmt {
+                ch: '█',
+                fg: color,
+                bg: grid[i].bg,
+            };
+        }
+        if frac > 0.125 && height_int < max_height {
+            let y = horizon - 1 - height_int;
+            let idx = ((frac * 8.0) as usize).min(7);
+            let i = y * cols + x;
+            grid[i] = CellFmt {
+                ch: STEPS[idx],
+                fg: color,
                 bg: grid[i].bg,
             };
         }
