@@ -13,27 +13,23 @@ motion. The caboose is always the only red car.
 
 ## Audio
 
-On first launch the game downloads two short OGG files from Wikimedia
-Commons (~1 MB total), transcodes them to AIFF with `ffmpeg`, and caches
-them under `~/Library/Caches/train-game/`..
-
-If `curl` or `ffmpeg` aren't available, the SFX silently fall back to TTS.
-
-To regenerate, delete the cache directory and relaunch. To use your own
-sounds, drop AIFF files with the same names there.
+All three sounds are vendored under `assets/` and embedded into the binary
+at compile time. Playback uses [`rodio`](https://crates.io/crates/rodio),
+so the game runs on macOS, Linux, and Windows with no audio toolchain
+required at runtime.
 
 ## Attribution
 
-- **Chugga loop** (`steam_engine.ogg`): public-domain recording by *aradlaw*,
-  via [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Steam_engine.ogg).
-- **Whistle / horn** (`WWS_SteamWhistle.ogg`): CC-BY-4.0, via
+- **Chugga loop** (`assets/chugga.flac`, from `Steam_engine.ogg`):
+  public-domain recording by *aradlaw*, via
+  [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Steam_engine.ogg).
+- **Whistle / horn** (`assets/whistle.flac`, from `WWS_SteamWhistle.ogg`):
+  CC-BY-4.0, via
   [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:WWS_SteamWhistle.ogg).
 
 ## Requirements
 
 - Rust toolchain (edition 2024 — Rust 1.85+)
-- macOS (uses `afplay` for playback)
-- `curl` and `ffmpeg` for first-run audio setup (optional — falls back to TTS)
 
 ## Run
 

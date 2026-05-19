@@ -117,9 +117,6 @@ fn main() -> io::Result<()> {
     if std::env::args().any(|a| a == "--smoke") {
         return smoke_test();
     }
-    if std::env::args().any(|a| a == "--audio-setup") {
-        return audio_setup_check();
-    }
 
     let (cols, rows) = size().unwrap_or((80, 24));
     let mut game = Game::new(cols, rows);
@@ -170,31 +167,6 @@ fn main() -> io::Result<()> {
     disable_raw_mode()?;
 
     result
-}
-
-fn audio_setup_check() -> io::Result<()> {
-    let started = Instant::now();
-    let _a = audio::Audio::new();
-    let elapsed = started.elapsed();
-    let cache = std::env::var_os("HOME")
-        .map(|h| std::path::PathBuf::from(h).join("Library/Caches/train-game"))
-        .unwrap();
-    println!("audio setup took {:?}", elapsed);
-    if cache.exists() {
-        println!("cache files in {}:", cache.display());
-        for entry in std::fs::read_dir(&cache)? {
-            let entry = entry?;
-            let meta = entry.metadata()?;
-            println!(
-                "  {:>8} bytes  {}",
-                meta.len(),
-                entry.file_name().to_string_lossy()
-            );
-        }
-    } else {
-        println!("cache dir does not exist");
-    }
-    Ok(())
 }
 
 fn smoke_test() -> io::Result<()> {
