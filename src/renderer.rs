@@ -433,8 +433,8 @@ fn sky_state(elapsed: f32) -> SkyState {
         top: rgb(8, 14, 38),
         mid: rgb(18, 30, 68),
         horizon: rgb(40, 58, 92),
-        cloud: rgb(70, 78, 98),
-        cloud_shadow: rgb(28, 34, 55),
+        cloud: rgb(140, 150, 175),
+        cloud_shadow: rgb(95, 105, 130),
         ground: rgb(28, 52, 38),
         ground_dark: rgb(12, 28, 24),
     };
