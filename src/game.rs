@@ -4,18 +4,18 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
-pub const MAX_CARS: usize = 24;
 pub const SEG_HEIGHT: usize = 14;
 pub const SMOKE_RISE: f32 = -8.0;
 pub const SMOKE_MAX_AGE: f32 = 3.0;
 pub const SMOKE_SPAWN_INTERVAL: f32 = 0.08;
 pub const TRAIN_SPEED_CELLS_PER_SEC: f32 = 32.0;
 pub const TRAIN_KEEP_MOVING_MS: u128 = 650;
-pub const HORN_FLASH_MS: u128 = 600;
 pub const CELEBRATE_MS: u128 = 900;
-/// Gap between caboose exiting the right and engine re-emerging on the left,
-/// so wrap-around happens only while the whole train is off-screen.
-pub const LONG_TRAIN_TAIL_GAP: i32 = 8;
+/// Engine re-emerges from the left this many cells after passing the right
+/// edge. Small overshoot keeps the train looping continuously — for trains
+/// longer than the screen, the caboose stays visible on the right while the
+/// engine re-enters on the left.
+pub const WRAP_OVERSHOOT: i32 = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CarKind {
@@ -90,8 +90,16 @@ pub struct Game {
 
     pub head_x: f32,
     pub velocity: f32,
+    /// Monotonic, unwrapped distance the train has traveled (signed: forward
+    /// motion adds, backward motion subtracts). Used to drive parallax so the
+    /// terrain stops with the train and reverses on backwards motion.
+    pub distance_traveled: f32,
 
     pub cars: Vec<Car>,
+    /// Index in `cars` of a car that hasn't been announced yet. We delay the
+    /// "another wheel" voice until the new car first appears on screen so the
+    /// audio matches what the player sees.
+    pub unannounced_car: Option<usize>,
 
     pub smoke: Vec<Smoke>,
     smoke_spawn_accum: f32,
@@ -101,7 +109,6 @@ pub struct Game {
     pub last_tick: Instant,
 
     pub last_move: Option<Instant>,
-    pub last_horn: Option<Instant>,
     pub last_celebrate: Option<Instant>,
 
     pub quit: bool,
@@ -115,14 +122,15 @@ impl Game {
             screen_rows: rows,
             head_x: 0.0,
             velocity: 0.0,
+            distance_traveled: 0.0,
             cars: Vec::new(),
+            unannounced_car: None,
             smoke: Vec::new(),
             smoke_spawn_accum: 0.0,
             rng: SmallRng::from_entropy(),
             started_at: now,
             last_tick: now,
             last_move: None,
-            last_horn: None,
             last_celebrate: None,
             quit: false,
         }
@@ -137,15 +145,14 @@ impl Game {
         }
     }
 
-    /// Distance the head must travel before wrapping back to 0.
-    /// Wait until the caboose has fully cleared the right edge so adding a
-    /// car never snaps visible cars back to the left side of the screen.
+    /// Distance the head must travel before wrapping back to 0. Short, so the
+    /// engine re-enters on the left shortly after exiting on the right. The
+    /// renderer draws the train at three offsets (-cycle, 0, +cycle) so that
+    /// once the train is longer than the screen, the caboose remains visible
+    /// on the right while the engine re-emerges on the left — a continuous
+    /// loop with no visible jump.
     pub fn cycle(&self) -> i32 {
-        let screen = self.screen_cols as i32;
-        let train = self.train_total_width();
-        // Caboose's LEFT edge reaches the screen's RIGHT edge when
-        // head_x = screen + train - 1.
-        screen + train - 1 + LONG_TRAIN_TAIL_GAP
+        self.screen_cols as i32 + WRAP_OVERSHOOT
     }
 
     pub fn train_total_width(&self) -> i32 {
@@ -175,8 +182,9 @@ impl Game {
         self.train_top() as i32
     }
 
-    /// Returns the number of cars added this tick (0 or 1 in practice).
-    /// Caller plays audio based on this.
+    /// Returns the number of new-car *announcements* this tick (0 or 1). A
+    /// car can be added on a wrap event but the announcement is deferred
+    /// until the new car is actually visible on screen (see `unannounced_car`).
     pub fn tick(&mut self) -> u32 {
         let now = Instant::now();
         let dt = now.duration_since(self.last_tick).as_secs_f32().min(0.1);
@@ -198,10 +206,21 @@ impl Game {
         } else {
             unwrapped
         };
+        self.distance_traveled += self.velocity * dt;
 
         // Forward wrap-around event = one new car.
-        let cars_added = if cycle > 0.0 && self.velocity > 0.5 && unwrapped >= cycle {
-            if self.add_car() { 1 } else { 0 }
+        if cycle > 0.0 && self.velocity > 0.5 && unwrapped >= cycle {
+            self.add_car();
+        }
+
+        let announce = if let Some(idx) = self.unannounced_car {
+            if self.car_is_on_screen(idx) {
+                self.unannounced_car = None;
+                self.last_celebrate = Some(now);
+                1
+            } else {
+                0
+            }
         } else {
             0
         };
@@ -221,7 +240,35 @@ impl Game {
             s.age < SMOKE_MAX_AGE
         });
 
-        cars_added
+        announce
+    }
+
+    /// Is car at index `idx` at least partially within the screen at any of
+    /// the renderer's three wrap-offsets?
+    fn car_is_on_screen(&self, idx: usize) -> bool {
+        if idx >= self.cars.len() {
+            return false;
+        }
+        let engine_w = crate::renderer::ENGINE.width as i32;
+        let mut right = self.head_x.floor() as i32 - engine_w;
+        for (i, car) in self.cars.iter().enumerate() {
+            let w = crate::renderer::car_sprite(car.kind).width as i32;
+            let left = right - w + 1;
+            if i == idx {
+                let cycle = self.cycle();
+                let screen = self.screen_cols as i32;
+                for shift in [-cycle, 0, cycle] {
+                    let l = left + shift;
+                    let r = right + shift;
+                    if r >= 0 && l < screen {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            right = left - 1;
+        }
+        false
     }
 
     fn spawn_smoke_puff(&mut self) {
@@ -243,10 +290,7 @@ impl Game {
         }
     }
 
-    fn add_car(&mut self) -> bool {
-        if self.cars.len() >= MAX_CARS {
-            return false;
-        }
+    fn add_car(&mut self) {
         let idx = self.cars.len();
         // Insert right behind the engine (cars[0]) rather than right in
         // front of the caboose (cars.push). Visually, the engine "pulls" a
@@ -259,8 +303,11 @@ impl Game {
                 color: CarColor::rotate(idx),
             },
         );
-        self.last_celebrate = Some(Instant::now());
-        true
+        if let Some(prev) = self.unannounced_car {
+            self.unannounced_car = Some(prev + 1);
+        } else {
+            self.unannounced_car = Some(0);
+        }
     }
 
     pub fn nudge_forward(&mut self) {
@@ -277,14 +324,6 @@ impl Game {
         matches!(self.last_move, Some(t) if t.elapsed().as_millis() < TRAIN_KEEP_MOVING_MS + 200)
     }
 
-    pub fn horn(&mut self) {
-        self.last_horn = Some(Instant::now());
-    }
-
-    pub fn horn_active(&self) -> bool {
-        matches!(self.last_horn, Some(t) if t.elapsed().as_millis() < HORN_FLASH_MS)
-    }
-
     pub fn celebrating(&self) -> bool {
         matches!(self.last_celebrate, Some(t) if t.elapsed().as_millis() < CELEBRATE_MS)
     }
@@ -292,18 +331,15 @@ impl Game {
 
 #[cfg(test)]
 mod tests {
-    use super::{Game, LONG_TRAIN_TAIL_GAP};
+    use super::{Game, WRAP_OVERSHOOT};
     use crate::game::TRAIN_SPEED_CELLS_PER_SEC;
     use std::time::{Duration, Instant};
 
     #[test]
-    fn cycle_waits_until_short_train_is_fully_offscreen() {
+    fn cycle_is_screen_plus_overshoot() {
         let game = Game::new(200, 40);
 
-        assert_eq!(
-            game.cycle(),
-            game.screen_cols as i32 + game.train_total_width() - 1 + LONG_TRAIN_TAIL_GAP
-        );
+        assert_eq!(game.cycle(), game.screen_cols as i32 + WRAP_OVERSHOOT);
     }
 
     #[test]
@@ -316,5 +352,18 @@ mod tests {
 
         assert_eq!(game.tick(), 0);
         assert_eq!(game.cars.len(), 0);
+    }
+
+    #[test]
+    fn forward_wrap_adds_car_and_defers_announcement_until_visible() {
+        let mut game = Game::new(200, 40);
+
+        game.head_x = (game.cycle() - 1) as f32;
+        game.velocity = TRAIN_SPEED_CELLS_PER_SEC;
+        game.last_tick = Instant::now() - Duration::from_secs(1);
+
+        let announced = game.tick();
+        assert_eq!(game.cars.len(), 1);
+        assert!(announced <= 1);
     }
 }

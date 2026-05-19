@@ -5,7 +5,7 @@ use crossterm::queue;
 use crossterm::style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor};
 use crossterm::terminal::{Clear, ClearType};
 
-use crate::game::{CarColor, CarKind, Game, MAX_CARS, SEG_HEIGHT};
+use crate::game::{CarColor, CarKind, Game, SEG_HEIGHT};
 
 pub struct Sprite {
     pub width: usize,
@@ -249,7 +249,6 @@ struct SkyPalette {
 struct SkyState {
     palette: SkyPalette,
     phase_time: f32,
-    elapsed: f32,
     rain: f32,
     stars: f32,
 }
@@ -313,13 +312,15 @@ impl Renderer {
         let idx = |r: usize, c: usize| r * cols + c;
 
         let train_top = game.train_top();
-        let horizon = train_top + SEG_HEIGHT - 2;
+        // Horizon sits at the top of the train's wheel/track band so the
+        // wheels rest on the ground instead of floating in the sky.
+        let horizon = train_top + SEG_HEIGHT - 4;
         let sky = sky_state(game.started_at.elapsed().as_secs_f32());
 
         draw_sky(&mut self.grid, cols, rows, horizon, sky);
         draw_clouds(&mut self.grid, cols, rows, horizon, sky);
         draw_stars(&mut self.grid, cols, horizon, sky);
-        draw_terrain(&mut self.grid, cols, horizon, sky);
+        draw_terrain(&mut self.grid, cols, horizon, sky, game.distance_traveled);
         draw_rain(&mut self.grid, cols, rows, horizon, sky);
 
         draw_train(&mut self.grid, cols, rows, train_top, game);
@@ -458,7 +459,6 @@ fn sky_state(elapsed: f32) -> SkyState {
     SkyState {
         palette,
         phase_time,
-        elapsed,
         rain: bell(phase, 0.43, 0.10),
         stars: smoothstep((phase - 0.67) / 0.08) * (1.0 - smoothstep((phase - 0.94) / 0.05)),
     }
@@ -500,18 +500,12 @@ fn draw_sky(grid: &mut [CellFmt], cols: usize, rows: usize, horizon: usize, sky:
             let depth = (r - horizon) as f32 / (rows - horizon).max(1) as f32;
             blend(sky.palette.ground, sky.palette.ground_dark, depth)
         };
-        let ch = if r == horizon { '~' } else { ' ' };
-        let fg = if r == horizon {
-            Color::Rgb {
-                r: 80,
-                g: 60,
-                b: 30,
-            }
-        } else {
-            Color::Reset
-        };
         for c in 0..cols {
-            grid[r * cols + c] = CellFmt { ch, fg, bg };
+            grid[r * cols + c] = CellFmt {
+                ch: ' ',
+                fg: Color::Reset,
+                bg,
+            };
         }
     }
 }
@@ -575,31 +569,31 @@ fn draw_cloud(
     }
 }
 
-fn draw_terrain(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState) {
+fn draw_terrain(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState, phase: f32) {
     if horizon < 3 {
         return;
     }
-    // Far ridge: pale (atmospheric perspective), low, slow scroll
+    // Far ridge: washed out toward horizon (atmospheric perspective)
     draw_terrain_layer(
         grid,
         cols,
         horizon,
-        blend(sky.palette.ground_dark, sky.palette.horizon, 0.40),
-        sky.elapsed * 0.6,
+        blend(sky.palette.ground, sky.palette.horizon, 0.45),
+        phase * 0.15,
         0.028,
         1.0,
         1.4,
         0.5,
     );
-    // Near hills: darker, taller, faster scroll
+    // Near hills: slightly darker than foreground grass, not pitch-black
     draw_terrain_layer(
         grid,
         cols,
         horizon,
-        blend(sky.palette.ground_dark, rgb(0, 0, 0), 0.45),
-        sky.elapsed * 1.8,
+        blend(sky.palette.ground, rgb(0, 0, 0), 0.25),
+        phase * 0.4,
         0.052,
-        2.0,
+        1.8,
         2.0,
         1.0,
     );
@@ -635,9 +629,9 @@ fn draw_terrain_layer(
             let y = horizon - 1 - k;
             let i = y * cols + x;
             grid[i] = CellFmt {
-                ch: '█',
-                fg: color,
-                bg: grid[i].bg,
+                ch: ' ',
+                fg: Color::Reset,
+                bg: color,
             };
         }
         if frac > 0.125 && height_int < max_height {
@@ -744,27 +738,6 @@ fn draw_train(grid: &mut [CellFmt], cols: usize, rows: usize, train_top: usize, 
         draw_sprite(grid, cols, rows, caboose, Color::Red, left, train_top);
     }
 
-    if game.horn_active() {
-        let bubble = "TOOT TOOT!";
-        for shift in [-cycle, 0, cycle] {
-            let x = head_x + shift - bubble.len() as i32;
-            let y = train_top.saturating_sub(2);
-            put_text(
-                grid,
-                cols,
-                rows,
-                bubble,
-                x,
-                y,
-                Color::White,
-                Color::Rgb {
-                    r: 200,
-                    g: 30,
-                    b: 30,
-                },
-            );
-        }
-    }
 }
 
 fn draw_sprite(
@@ -972,25 +945,22 @@ fn draw_top_bar(grid: &mut [CellFmt], cols: usize, rows: usize, game: &Game, sky
             bg,
         };
     }
-    let cars = game.cars.len();
-    let left = format!(" ←/→ drive   SPACE toot   EXIT or QUIT to exit");
-    let right = if game.celebrating() {
-        format!("Another wheel!  Cars: {cars}/{MAX_CARS} ")
-    } else {
-        format!("Cars: {cars}/{MAX_CARS} ")
-    };
-    put_text(grid, cols, rows, &left, 0, 0, Color::White, bg);
-    let right_x = cols as i32 - right.chars().count() as i32;
-    put_text(
-        grid,
-        cols,
-        rows,
-        &right,
-        right_x.max(0),
-        0,
-        Color::White,
-        bg,
-    );
+    let left = " ←/→ drive   SPACE choo choo   EXIT or QUIT to exit";
+    put_text(grid, cols, rows, left, 0, 0, Color::White, bg);
+    if game.celebrating() {
+        let right = "Another wheel! ";
+        let right_x = cols as i32 - right.chars().count() as i32;
+        put_text(
+            grid,
+            cols,
+            rows,
+            right,
+            right_x.max(0),
+            0,
+            Color::White,
+            bg,
+        );
+    }
 }
 
 #[allow(dead_code)]

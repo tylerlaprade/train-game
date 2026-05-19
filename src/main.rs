@@ -315,7 +315,6 @@ fn handle_key(
             game.nudge_backward();
         }
         KeyCode::Char(' ') => {
-            game.horn();
             if let Some(a) = audio.as_mut() {
                 a.horn();
             }
