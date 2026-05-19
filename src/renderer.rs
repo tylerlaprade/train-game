@@ -312,9 +312,7 @@ impl Renderer {
         let idx = |r: usize, c: usize| r * cols + c;
 
         let train_top = game.train_top();
-        // Horizon sits at the top of the train's wheel/track band so the
-        // wheels rest on the ground instead of floating in the sky.
-        let horizon = train_top + SEG_HEIGHT - 4;
+        let horizon = train_top + SEG_HEIGHT - 2;
         let sky = sky_state(game.started_at.elapsed().as_secs_f32());
 
         draw_sky(&mut self.grid, cols, rows, horizon, sky);

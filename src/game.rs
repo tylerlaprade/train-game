@@ -11,11 +11,11 @@ pub const SMOKE_SPAWN_INTERVAL: f32 = 0.08;
 pub const TRAIN_SPEED_CELLS_PER_SEC: f32 = 32.0;
 pub const TRAIN_KEEP_MOVING_MS: u128 = 650;
 pub const CELEBRATE_MS: u128 = 900;
-/// Engine re-emerges from the left this many cells after passing the right
-/// edge. Small overshoot keeps the train looping continuously — for trains
-/// longer than the screen, the caboose stays visible on the right while the
-/// engine re-enters on the left.
-pub const WRAP_OVERSHOOT: i32 = 6;
+/// Empty track between the caboose of one loop iteration and the engine of
+/// the next, used when the train is long enough that it drives the cycle.
+/// Larger than a car width so the gap reads as "empty track" rather than
+/// "cars touching."
+pub const TRAIN_TAIL_GAP: i32 = 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CarKind {
@@ -145,14 +145,24 @@ impl Game {
         }
     }
 
-    /// Distance the head must travel before wrapping back to 0. Short, so the
-    /// engine re-enters on the left shortly after exiting on the right. The
-    /// renderer draws the train at three offsets (-cycle, 0, +cycle) so that
-    /// once the train is longer than the screen, the caboose remains visible
-    /// on the right while the engine re-emerges on the left — a continuous
-    /// loop with no visible jump.
+    /// Distance the head must travel before wrapping back to 0. Picked so
+    /// three constraints all hold simultaneously:
+    ///   * No two engines on screen at once (`cycle > screen + engine_width`).
+    ///   * A new car inserted behind the engine on wrap is OFF screen at the
+    ///     `+cycle` draw offset (so the player sees it scroll in from the
+    ///     right rather than pop into view mid-screen). This drives the
+    ///     `screen + engine + car + margin` floor.
+    ///   * For long trains, a `TRAIN_TAIL_GAP` stretch of empty track
+    ///     separates the caboose from the next engine.
     pub fn cycle(&self) -> i32 {
-        self.screen_cols as i32 + WRAP_OVERSHOOT
+        let screen = self.screen_cols as i32;
+        let train = self.train_total_width();
+        let engine = crate::renderer::ENGINE.width as i32;
+        // 34 is the width of every car kind; using the next inserted kind
+        // here would be more correct but every kind shares the same width.
+        let car_w = crate::renderer::car_sprite(CarKind::Boxcar).width as i32;
+        let floor = screen + engine + car_w + 5;
+        floor.max(train + TRAIN_TAIL_GAP)
     }
 
     pub fn train_total_width(&self) -> i32 {
@@ -331,15 +341,26 @@ impl Game {
 
 #[cfg(test)]
 mod tests {
-    use super::{Game, WRAP_OVERSHOOT};
+    use super::Game;
     use crate::game::TRAIN_SPEED_CELLS_PER_SEC;
     use std::time::{Duration, Instant};
 
     #[test]
-    fn cycle_is_screen_plus_overshoot() {
+    fn cycle_keeps_new_car_off_screen_at_wrap_moment() {
         let game = Game::new(200, 40);
 
-        assert_eq!(game.cycle(), game.screen_cols as i32 + WRAP_OVERSHOOT);
+        // At head_x = 0 (just after wrap), cars[0] would sit at columns
+        // [cycle - engine_w - car_w + 1, cycle - engine_w] in the +cycle copy.
+        // The left edge must be strictly past the right side of the screen.
+        let engine_w = crate::renderer::ENGINE.width as i32;
+        let car_w = crate::renderer::car_sprite(super::CarKind::Boxcar).width as i32;
+        let cars0_left = game.cycle() - engine_w - car_w + 1;
+        assert!(
+            cars0_left >= game.screen_cols as i32,
+            "cars[0] would be visible at offset +cycle (left={}, screen={})",
+            cars0_left,
+            game.screen_cols,
+        );
     }
 
     #[test]
@@ -355,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn forward_wrap_adds_car_and_defers_announcement_until_visible() {
+    fn forward_wrap_adds_car_off_screen_so_announcement_is_deferred() {
         let mut game = Game::new(200, 40);
 
         game.head_x = (game.cycle() - 1) as f32;
@@ -364,6 +385,9 @@ mod tests {
 
         let announced = game.tick();
         assert_eq!(game.cars.len(), 1);
-        assert!(announced <= 1);
+        assert_eq!(
+            announced, 0,
+            "new car should be off-screen at the wrap moment so the voice waits"
+        );
     }
 }
