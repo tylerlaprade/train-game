@@ -91,6 +91,11 @@ required at runtime.
 - **Whistle / horn** (`assets/whistle.flac`, from `WWS_SteamWhistle.ogg`):
   CC-BY-4.0, via
   [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:WWS_SteamWhistle.ogg).
+- **Another wheel** (`assets/another_wheel.flac`):
+  generated with the Piper `en_US-ljspeech-medium` voice. The
+  [`piper-voices` repository](https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/ljspeech/medium)
+  is MIT licensed, and its model card lists the
+  [LJ Speech dataset](https://keithito.com/LJ-Speech-Dataset/) as public domain.
 
 ## Requirements
 

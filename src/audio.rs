@@ -47,7 +47,6 @@ impl Audio {
         self.play_oneshot(ANOTHER_WHEEL, 1.0);
     }
 
-
     fn play_oneshot(&self, data: &'static [u8], volume: f32) {
         let Ok(source) = Decoder::try_from(Cursor::new(data)) else {
             return;
