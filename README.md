@@ -6,8 +6,7 @@ A side-scrolling terminal steam train for toddlers.
 - **Spacebar** — toot the horn
 - Type `quit` or `exit` — quit
 
-The smoke billows continuously and drifts realistically based on the train's
-motion. The caboose is always the only red car.
+<img width="1440" height="900" alt="image" src="https://github.com/user-attachments/assets/04409fe2-ae62-4b7c-82fb-cfc3839fc494" />
 
 ## Audio
 
