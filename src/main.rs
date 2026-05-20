@@ -1,3 +1,4 @@
+use std::fmt;
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -9,8 +10,8 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, size, Clear, ClearType, EnterAlternateScreen,
-    LeaveAlternateScreen,
+    Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+    enable_raw_mode, size,
 };
 
 mod audio;
@@ -21,6 +22,34 @@ use game::Game;
 
 const FRAME_DURATION: Duration = Duration::from_millis(33);
 const UNLOCK_SEQUENCES: &[&str] = &["quit", "exit"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HideMousePointerWhileTyping;
+
+impl crossterm::Command for HideMousePointerWhileTyping {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        f.write_str("\x1b[>2p")
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RestoreMousePointerMode;
+
+impl crossterm::Command for RestoreMousePointerMode {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        f.write_str("\x1b[>p")
+    }
+
+    #[cfg(windows)]
+    fn execute_winapi(&self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Direction {
@@ -134,6 +163,7 @@ fn main() -> io::Result<()> {
         EnterAlternateScreen,
         Hide,
         EnableMouseCapture,
+        HideMousePointerWhileTyping,
         EnableBracketedPaste,
         EnableFocusChange,
         Clear(ClearType::All)
@@ -167,6 +197,7 @@ fn main() -> io::Result<()> {
         DisableBracketedPaste,
         DisableFocusChange,
         DisableMouseCapture,
+        RestoreMousePointerMode,
         Show,
         LeaveAlternateScreen
     )?;
@@ -313,8 +344,12 @@ fn handle_key(
 
 #[cfg(test)]
 mod tests {
-    use super::{handle_key, Direction, InputState, UnlockState};
-    use crate::game::{Game, BIOME_BLEND_START_DISTANCE, BIOME_DEBUG_SKIP_MARGIN};
+    use super::{
+        Direction, HideMousePointerWhileTyping, InputState, RestoreMousePointerMode, UnlockState,
+        handle_key,
+    };
+    use crate::game::{BIOME_BLEND_START_DISTANCE, BIOME_DEBUG_SKIP_MARGIN, Game};
+    use crossterm::Command;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     #[test]
@@ -389,5 +424,16 @@ mod tests {
             (game.distance_traveled - (BIOME_BLEND_START_DISTANCE - BIOME_DEBUG_SKIP_MARGIN)).abs()
                 < f32::EPSILON
         );
+    }
+
+    #[test]
+    fn mouse_pointer_mode_commands_use_xtsmpointer_sequences() {
+        let mut hide = String::new();
+        HideMousePointerWhileTyping.write_ansi(&mut hide).unwrap();
+        assert_eq!(hide, "\x1b[>2p");
+
+        let mut restore = String::new();
+        RestoreMousePointerMode.write_ansi(&mut restore).unwrap();
+        assert_eq!(restore, "\x1b[>p");
     }
 }

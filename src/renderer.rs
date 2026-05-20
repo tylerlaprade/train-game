@@ -6,7 +6,7 @@ use crossterm::style::{Color, Print, ResetColor, SetBackgroundColor, SetForegrou
 use crossterm::terminal::{Clear, ClearType};
 
 use crate::game::{
-    CarColor, CarKind, Game, BIOME_BLEND_FRACTION, BIOME_TRANSITION_DISTANCE, DAY_CYCLE_SECS,
+    BIOME_BLEND_FRACTION, BIOME_TRANSITION_DISTANCE, CarColor, CarKind, DAY_CYCLE_SECS, Game,
     SEG_HEIGHT,
 };
 

@@ -1,8 +1,8 @@
 use std::time::Instant;
 
-use rand::rngs::SmallRng;
 use rand::Rng;
 use rand::SeedableRng;
+use rand::rngs::SmallRng;
 
 pub const SEG_HEIGHT: usize = 14;
 pub const SMOKE_RISE: f32 = -8.0;
