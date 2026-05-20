@@ -9,6 +9,12 @@ pub const SMOKE_RISE: f32 = -8.0;
 pub const SMOKE_MAX_AGE: f32 = 3.0;
 pub const SMOKE_SPAWN_INTERVAL: f32 = 0.08;
 pub const TRAIN_SPEED_CELLS_PER_SEC: f32 = 32.0;
+pub const DAY_CYCLE_SECS: f32 = 84.0;
+pub const BIOME_TRANSITION_DISTANCE: f32 = TRAIN_SPEED_CELLS_PER_SEC * DAY_CYCLE_SECS * 0.5;
+pub const BIOME_BLEND_FRACTION: f32 = 0.25;
+pub const BIOME_BLEND_START_DISTANCE: f32 =
+    BIOME_TRANSITION_DISTANCE * (1.0 - BIOME_BLEND_FRACTION);
+pub const BIOME_DEBUG_SKIP_MARGIN: f32 = TRAIN_SPEED_CELLS_PER_SEC * 2.0;
 pub const TRAIN_KEEP_MOVING_MS: u128 = 650;
 pub const CELEBRATE_MS: u128 = 900;
 /// Empty track between the caboose of one loop iteration and the engine of
@@ -336,12 +342,27 @@ impl Game {
     pub fn celebrating(&self) -> bool {
         matches!(self.last_celebrate, Some(t) if t.elapsed().as_millis() < CELEBRATE_MS)
     }
+
+    pub fn skip_to_next_biome_transition(&mut self) {
+        let segment = (self.distance_traveled / BIOME_TRANSITION_DISTANCE).floor();
+        let transition_start = segment * BIOME_TRANSITION_DISTANCE + BIOME_BLEND_START_DISTANCE;
+        let target = if self.distance_traveled < transition_start - BIOME_DEBUG_SKIP_MARGIN {
+            transition_start
+        } else {
+            (segment + 1.0) * BIOME_TRANSITION_DISTANCE + BIOME_BLEND_START_DISTANCE
+        };
+
+        self.distance_traveled = target - BIOME_DEBUG_SKIP_MARGIN;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Car, CarColor, CarKind, Game};
-    use crate::game::TRAIN_SPEED_CELLS_PER_SEC;
+    use crate::game::{
+        BIOME_BLEND_START_DISTANCE, BIOME_DEBUG_SKIP_MARGIN, BIOME_TRANSITION_DISTANCE,
+        TRAIN_SPEED_CELLS_PER_SEC,
+    };
     use std::time::{Duration, Instant};
 
     #[test]
@@ -411,5 +432,26 @@ mod tests {
         game.head_x = crate::renderer::ENGINE.width as f32;
         assert_eq!(game.tick(), 1);
         assert_eq!(game.unannounced_car, None);
+    }
+
+    #[test]
+    fn debug_skip_lands_just_before_next_biome_transition() {
+        let mut game = Game::new(200, 40);
+
+        game.skip_to_next_biome_transition();
+        assert!(
+            (game.distance_traveled - (BIOME_BLEND_START_DISTANCE - BIOME_DEBUG_SKIP_MARGIN)).abs()
+                < f32::EPSILON
+        );
+
+        game.distance_traveled = BIOME_BLEND_START_DISTANCE;
+        game.skip_to_next_biome_transition();
+        assert!(
+            (game.distance_traveled
+                - (BIOME_TRANSITION_DISTANCE + BIOME_BLEND_START_DISTANCE
+                    - BIOME_DEBUG_SKIP_MARGIN))
+                .abs()
+                < f32::EPSILON
+        );
     }
 }

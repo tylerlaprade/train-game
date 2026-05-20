@@ -5,7 +5,10 @@ use crossterm::queue;
 use crossterm::style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor};
 use crossterm::terminal::{Clear, ClearType};
 
-use crate::game::{CarColor, CarKind, Game, SEG_HEIGHT};
+use crate::game::{
+    CarColor, CarKind, Game, BIOME_BLEND_FRACTION, BIOME_TRANSITION_DISTANCE, DAY_CYCLE_SECS,
+    SEG_HEIGHT,
+};
 
 pub struct Sprite {
     pub width: usize,
@@ -242,7 +245,382 @@ const TRACK_TIE: Color = Color::Rgb {
     g: 58,
     b: 34,
 };
-const SKY_CYCLE_SECS: f32 = 84.0;
+const SKY_CYCLE_SECS: f32 = DAY_CYCLE_SECS;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BiomeKind {
+    Meadow,
+    Forest,
+    Mountains,
+    Desert,
+    Canyon,
+    Tundra,
+    City,
+    Coast,
+}
+
+#[derive(Clone, Copy)]
+struct Biome {
+    kind: BiomeKind,
+    ground: Color,
+    ground_dark: Color,
+    far: Color,
+    near: Color,
+    accent: Color,
+    far_freq: f32,
+    far_base: f32,
+    far_amp: f32,
+    far_detail: f32,
+    near_freq: f32,
+    near_base: f32,
+    near_amp: f32,
+    near_detail: f32,
+}
+
+#[derive(Clone, Copy)]
+struct BiomeVisual {
+    ground: Color,
+    ground_dark: Color,
+    far: Color,
+    near: Color,
+    far_freq: f32,
+    far_base: f32,
+    far_amp: f32,
+    far_detail: f32,
+    near_freq: f32,
+    near_base: f32,
+    near_amp: f32,
+    near_detail: f32,
+}
+
+#[derive(Clone, Copy)]
+struct BiomeState {
+    current: BiomeKind,
+    next: BiomeKind,
+    mix: f32,
+    visual: BiomeVisual,
+}
+
+#[derive(Clone, Copy)]
+struct TerrainLayer {
+    color: Color,
+    phase: f32,
+    freq: f32,
+    base: f32,
+    amp: f32,
+    detail_amp: f32,
+}
+
+#[derive(Clone, Copy)]
+struct BuildingSpec {
+    x: i32,
+    base_y: i32,
+    width: i32,
+    height: i32,
+    wall: Color,
+    light: Color,
+}
+
+#[derive(Clone, Copy)]
+struct BiomeDetailLayer {
+    rows: usize,
+    horizon: usize,
+    sky: SkyState,
+    kind: BiomeKind,
+    intensity: f32,
+    phase: f32,
+}
+
+const BIOMES: [Biome; 8] = [
+    Biome {
+        kind: BiomeKind::Meadow,
+        ground: Color::Rgb {
+            r: 58,
+            g: 116,
+            b: 47,
+        },
+        ground_dark: Color::Rgb {
+            r: 32,
+            g: 75,
+            b: 34,
+        },
+        far: Color::Rgb {
+            r: 98,
+            g: 138,
+            b: 70,
+        },
+        near: Color::Rgb {
+            r: 38,
+            g: 96,
+            b: 36,
+        },
+        accent: Color::Rgb {
+            r: 235,
+            g: 215,
+            b: 95,
+        },
+        far_freq: 0.026,
+        far_base: 1.0,
+        far_amp: 1.4,
+        far_detail: 0.5,
+        near_freq: 0.052,
+        near_base: 1.8,
+        near_amp: 2.1,
+        near_detail: 1.0,
+    },
+    Biome {
+        kind: BiomeKind::Forest,
+        ground: Color::Rgb {
+            r: 36,
+            g: 92,
+            b: 44,
+        },
+        ground_dark: Color::Rgb {
+            r: 18,
+            g: 54,
+            b: 34,
+        },
+        far: Color::Rgb {
+            r: 54,
+            g: 108,
+            b: 64,
+        },
+        near: Color::Rgb {
+            r: 22,
+            g: 72,
+            b: 38,
+        },
+        accent: Color::Rgb {
+            r: 20,
+            g: 62,
+            b: 28,
+        },
+        far_freq: 0.032,
+        far_base: 1.4,
+        far_amp: 2.0,
+        far_detail: 0.9,
+        near_freq: 0.078,
+        near_base: 2.2,
+        near_amp: 2.8,
+        near_detail: 1.2,
+    },
+    Biome {
+        kind: BiomeKind::Mountains,
+        ground: Color::Rgb {
+            r: 74,
+            g: 92,
+            b: 82,
+        },
+        ground_dark: Color::Rgb {
+            r: 42,
+            g: 55,
+            b: 58,
+        },
+        far: Color::Rgb {
+            r: 120,
+            g: 128,
+            b: 128,
+        },
+        near: Color::Rgb {
+            r: 78,
+            g: 88,
+            b: 86,
+        },
+        accent: Color::Rgb {
+            r: 218,
+            g: 228,
+            b: 230,
+        },
+        far_freq: 0.048,
+        far_base: 3.0,
+        far_amp: 5.8,
+        far_detail: 2.4,
+        near_freq: 0.074,
+        near_base: 2.2,
+        near_amp: 3.4,
+        near_detail: 1.8,
+    },
+    Biome {
+        kind: BiomeKind::Desert,
+        ground: Color::Rgb {
+            r: 164,
+            g: 126,
+            b: 67,
+        },
+        ground_dark: Color::Rgb {
+            r: 118,
+            g: 82,
+            b: 44,
+        },
+        far: Color::Rgb {
+            r: 190,
+            g: 146,
+            b: 78,
+        },
+        near: Color::Rgb {
+            r: 142,
+            g: 94,
+            b: 42,
+        },
+        accent: Color::Rgb {
+            r: 70,
+            g: 112,
+            b: 66,
+        },
+        far_freq: 0.018,
+        far_base: 0.8,
+        far_amp: 1.2,
+        far_detail: 0.25,
+        near_freq: 0.030,
+        near_base: 1.4,
+        near_amp: 1.6,
+        near_detail: 0.45,
+    },
+    Biome {
+        kind: BiomeKind::Canyon,
+        ground: Color::Rgb {
+            r: 128,
+            g: 72,
+            b: 48,
+        },
+        ground_dark: Color::Rgb {
+            r: 78,
+            g: 42,
+            b: 32,
+        },
+        far: Color::Rgb {
+            r: 164,
+            g: 92,
+            b: 62,
+        },
+        near: Color::Rgb {
+            r: 112,
+            g: 52,
+            b: 38,
+        },
+        accent: Color::Rgb {
+            r: 205,
+            g: 120,
+            b: 74,
+        },
+        far_freq: 0.024,
+        far_base: 2.2,
+        far_amp: 3.2,
+        far_detail: 0.8,
+        near_freq: 0.058,
+        near_base: 2.2,
+        near_amp: 2.8,
+        near_detail: 1.1,
+    },
+    Biome {
+        kind: BiomeKind::Tundra,
+        ground: Color::Rgb {
+            r: 155,
+            g: 176,
+            b: 180,
+        },
+        ground_dark: Color::Rgb {
+            r: 88,
+            g: 112,
+            b: 122,
+        },
+        far: Color::Rgb {
+            r: 188,
+            g: 205,
+            b: 210,
+        },
+        near: Color::Rgb {
+            r: 120,
+            g: 148,
+            b: 154,
+        },
+        accent: Color::Rgb {
+            r: 240,
+            g: 248,
+            b: 248,
+        },
+        far_freq: 0.032,
+        far_base: 1.8,
+        far_amp: 3.0,
+        far_detail: 1.0,
+        near_freq: 0.050,
+        near_base: 1.3,
+        near_amp: 1.8,
+        near_detail: 0.7,
+    },
+    Biome {
+        kind: BiomeKind::City,
+        ground: Color::Rgb {
+            r: 78,
+            g: 84,
+            b: 86,
+        },
+        ground_dark: Color::Rgb {
+            r: 42,
+            g: 48,
+            b: 52,
+        },
+        far: Color::Rgb {
+            r: 100,
+            g: 108,
+            b: 112,
+        },
+        near: Color::Rgb {
+            r: 68,
+            g: 74,
+            b: 78,
+        },
+        accent: Color::Rgb {
+            r: 185,
+            g: 176,
+            b: 126,
+        },
+        far_freq: 0.014,
+        far_base: 0.5,
+        far_amp: 0.7,
+        far_detail: 0.2,
+        near_freq: 0.026,
+        near_base: 0.8,
+        near_amp: 0.8,
+        near_detail: 0.25,
+    },
+    Biome {
+        kind: BiomeKind::Coast,
+        ground: Color::Rgb {
+            r: 62,
+            g: 124,
+            b: 116,
+        },
+        ground_dark: Color::Rgb {
+            r: 34,
+            g: 74,
+            b: 82,
+        },
+        far: Color::Rgb {
+            r: 96,
+            g: 150,
+            b: 148,
+        },
+        near: Color::Rgb {
+            r: 42,
+            g: 105,
+            b: 112,
+        },
+        accent: Color::Rgb {
+            r: 188,
+            g: 220,
+            b: 210,
+        },
+        far_freq: 0.020,
+        far_base: 0.7,
+        far_amp: 0.9,
+        far_detail: 0.25,
+        near_freq: 0.042,
+        near_base: 1.0,
+        near_amp: 1.2,
+        near_detail: 0.4,
+    },
+];
 
 #[derive(Clone, Copy)]
 struct SkyPalette {
@@ -324,12 +702,29 @@ impl Renderer {
         let train_top = game.train_top();
         let horizon = train_top + SEG_HEIGHT - 2;
         let sky = sky_state(game.started_at.elapsed().as_secs_f32());
+        let biome = biome_state(game.distance_traveled);
 
-        draw_sky(&mut self.grid, cols, rows, horizon, sky);
+        draw_sky(&mut self.grid, cols, rows, horizon, sky, biome.visual);
         draw_clouds(&mut self.grid, cols, rows, horizon, sky);
         draw_stars(&mut self.grid, cols, horizon, sky);
-        draw_terrain(&mut self.grid, cols, horizon, sky, game.distance_traveled);
+        draw_terrain(
+            &mut self.grid,
+            cols,
+            horizon,
+            sky,
+            biome.visual,
+            game.distance_traveled,
+        );
         draw_tracks(&mut self.grid, cols, rows, horizon, game.distance_traveled);
+        draw_biome_details(
+            &mut self.grid,
+            cols,
+            rows,
+            horizon,
+            sky,
+            biome,
+            game.distance_traveled,
+        );
         draw_rain(&mut self.grid, cols, rows, horizon, sky);
 
         draw_train(&mut self.grid, cols, rows, train_top, game);
@@ -494,7 +889,65 @@ fn bell(x: f32, center: f32, half_width: f32) -> f32 {
     (1.0 - ((x - center).abs() / half_width)).clamp(0.0, 1.0)
 }
 
-fn draw_sky(grid: &mut [CellFmt], cols: usize, rows: usize, horizon: usize, sky: SkyState) {
+fn biome_state(distance: f32) -> BiomeState {
+    let progress = distance / BIOME_TRANSITION_DISTANCE;
+    let base = progress.floor();
+    let local = progress - base;
+    let blend_start = 1.0 - BIOME_BLEND_FRACTION;
+    let mix = if local < blend_start {
+        0.0
+    } else {
+        smoothstep((local - blend_start) / BIOME_BLEND_FRACTION)
+    };
+    let current_idx = (base as i32).rem_euclid(BIOMES.len() as i32) as usize;
+    let next_idx = (current_idx + 1) % BIOMES.len();
+    let current = BIOMES[current_idx];
+    let next = BIOMES[next_idx];
+
+    BiomeState {
+        current: current.kind,
+        next: next.kind,
+        mix,
+        visual: blend_biome(current, next, mix),
+    }
+}
+
+fn blend_biome(a: Biome, b: Biome, t: f32) -> BiomeVisual {
+    BiomeVisual {
+        ground: blend(a.ground, b.ground, t),
+        ground_dark: blend(a.ground_dark, b.ground_dark, t),
+        far: blend(a.far, b.far, t),
+        near: blend(a.near, b.near, t),
+        far_freq: mix_f32(a.far_freq, b.far_freq, t),
+        far_base: mix_f32(a.far_base, b.far_base, t),
+        far_amp: mix_f32(a.far_amp, b.far_amp, t),
+        far_detail: mix_f32(a.far_detail, b.far_detail, t),
+        near_freq: mix_f32(a.near_freq, b.near_freq, t),
+        near_base: mix_f32(a.near_base, b.near_base, t),
+        near_amp: mix_f32(a.near_amp, b.near_amp, t),
+        near_detail: mix_f32(a.near_detail, b.near_detail, t),
+    }
+}
+
+fn mix_f32(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+fn biome_lit(base: Color, sky_color: Color) -> Color {
+    blend(base, sky_color, 0.35)
+}
+
+fn draw_sky(
+    grid: &mut [CellFmt],
+    cols: usize,
+    rows: usize,
+    horizon: usize,
+    sky: SkyState,
+    biome: BiomeVisual,
+) {
+    let ground = biome_lit(biome.ground, sky.palette.ground);
+    let ground_dark = biome_lit(biome.ground_dark, sky.palette.ground_dark);
+
     for r in 0..rows {
         let bg = if r < horizon {
             let depth = r as f32 / horizon.max(1) as f32;
@@ -504,10 +957,10 @@ fn draw_sky(grid: &mut [CellFmt], cols: usize, rows: usize, horizon: usize, sky:
                 blend(sky.palette.mid, sky.palette.horizon, (depth - 0.58) / 0.42)
             }
         } else if r == horizon {
-            sky.palette.ground
+            ground
         } else {
             let depth = (r - horizon) as f32 / (rows - horizon).max(1) as f32;
-            blend(sky.palette.ground, sky.palette.ground_dark, depth)
+            blend(ground, ground_dark, depth)
         };
         for c in 0..cols {
             grid[r * cols + c] = CellFmt {
@@ -578,57 +1031,66 @@ fn draw_cloud(
     }
 }
 
-fn draw_terrain(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState, phase: f32) {
+fn draw_terrain(
+    grid: &mut [CellFmt],
+    cols: usize,
+    horizon: usize,
+    sky: SkyState,
+    biome: BiomeVisual,
+    phase: f32,
+) {
     if horizon < 3 {
         return;
     }
+
+    let far = blend(
+        biome_lit(biome.far, sky.palette.ground),
+        sky.palette.horizon,
+        0.28,
+    );
+    let near = biome_lit(biome.near, sky.palette.ground_dark);
+
     // Far ridge: washed out toward horizon (atmospheric perspective)
     draw_terrain_layer(
         grid,
         cols,
         horizon,
-        blend(sky.palette.ground, sky.palette.horizon, 0.45),
-        phase * 0.15,
-        0.028,
-        1.0,
-        1.4,
-        0.5,
+        TerrainLayer {
+            color: far,
+            phase: phase * 0.15,
+            freq: biome.far_freq,
+            base: biome.far_base,
+            amp: biome.far_amp,
+            detail_amp: biome.far_detail,
+        },
     );
     // Near hills: slightly darker than foreground grass, not pitch-black
     draw_terrain_layer(
         grid,
         cols,
         horizon,
-        blend(sky.palette.ground, rgb(0, 0, 0), 0.25),
-        phase * 0.4,
-        0.052,
-        1.8,
-        2.0,
-        1.0,
+        TerrainLayer {
+            color: near,
+            phase: phase * 0.4,
+            freq: biome.near_freq,
+            base: biome.near_base,
+            amp: biome.near_amp,
+            detail_amp: biome.near_detail,
+        },
     );
 }
 
-fn draw_terrain_layer(
-    grid: &mut [CellFmt],
-    cols: usize,
-    horizon: usize,
-    color: Color,
-    phase: f32,
-    freq: f32,
-    base: f32,
-    amp: f32,
-    detail_amp: f32,
-) {
+fn draw_terrain_layer(grid: &mut [CellFmt], cols: usize, horizon: usize, layer: TerrainLayer) {
     const STEPS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let max_height = horizon.saturating_sub(1);
     if max_height == 0 {
         return;
     }
     for x in 0..cols {
-        let xf = x as f32 + phase;
-        let h = base
-            + amp * 0.5 * (1.0 + (xf * freq).sin())
-            + detail_amp * 0.5 * (xf * freq * 3.1 + 1.3).sin();
+        let xf = x as f32 + layer.phase;
+        let h = layer.base
+            + layer.amp * 0.5 * (1.0 + (xf * layer.freq).sin())
+            + layer.detail_amp * 0.5 * (xf * layer.freq * 3.1 + 1.3).sin();
         if h <= 0.0 {
             continue;
         }
@@ -640,7 +1102,7 @@ fn draw_terrain_layer(
             grid[i] = CellFmt {
                 ch: ' ',
                 fg: Color::Reset,
-                bg: color,
+                bg: layer.color,
             };
         }
         if frac > 0.125 && height_int < max_height {
@@ -652,22 +1114,321 @@ fn draw_terrain_layer(
                 CellFmt {
                     ch: '▔',
                     fg: grid[i].bg,
-                    bg: color,
+                    bg: layer.color,
                 }
             } else if frac >= 0.5 {
                 CellFmt {
                     ch: '▀',
                     fg: grid[i].bg,
-                    bg: color,
+                    bg: layer.color,
                 }
             } else {
                 let idx = ((frac * 8.0) as usize).min(7);
                 CellFmt {
                     ch: STEPS[idx],
-                    fg: color,
+                    fg: layer.color,
                     bg: grid[i].bg,
                 }
             };
+        }
+    }
+}
+
+fn draw_biome_details(
+    grid: &mut [CellFmt],
+    cols: usize,
+    rows: usize,
+    horizon: usize,
+    sky: SkyState,
+    biome: BiomeState,
+    phase: f32,
+) {
+    if horizon + 2 >= rows {
+        return;
+    }
+
+    draw_biome_detail_layer(
+        grid,
+        cols,
+        BiomeDetailLayer {
+            rows,
+            horizon,
+            sky,
+            kind: biome.current,
+            intensity: 1.0 - biome.mix,
+            phase,
+        },
+    );
+    draw_biome_detail_layer(
+        grid,
+        cols,
+        BiomeDetailLayer {
+            rows,
+            horizon,
+            sky,
+            kind: biome.next,
+            intensity: biome.mix,
+            phase,
+        },
+    );
+}
+
+fn draw_biome_detail_layer(grid: &mut [CellFmt], cols: usize, layer: BiomeDetailLayer) {
+    let intensity = layer.intensity.clamp(0.0, 1.0);
+    if intensity < 0.08 {
+        return;
+    }
+
+    let biome = biome_for(layer.kind);
+    let fg = blend(
+        biome_lit(biome.accent, layer.sky.palette.horizon),
+        biome_lit(biome.ground, layer.sky.palette.ground),
+        0.35,
+    );
+    let near = biome_lit(biome.near, layer.sky.palette.ground_dark);
+
+    match layer.kind {
+        BiomeKind::Meadow => {
+            for x in 0..cols {
+                let Some(slot) = detail_slot(x, layer.phase, 9) else {
+                    continue;
+                };
+                if !detail_visible(slot, 11, intensity) {
+                    continue;
+                }
+                let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 12, 1) else {
+                    continue;
+                };
+                let ch = if detail_hash(slot, 13).is_multiple_of(2) {
+                    ','
+                } else {
+                    '\''
+                };
+                put_detail(grid, cols, x as i32, base_y, ch, fg);
+            }
+        }
+        BiomeKind::Forest => {
+            for x in 0..cols {
+                let Some(slot) = detail_slot(x, layer.phase, 7) else {
+                    continue;
+                };
+                if !detail_visible(slot, 21, intensity) {
+                    continue;
+                }
+                let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 22, 2) else {
+                    continue;
+                };
+                draw_pine(grid, cols, x as i32, base_y, near);
+            }
+        }
+        BiomeKind::Mountains => {
+            for x in 0..cols {
+                let Some(slot) = detail_slot(x, layer.phase * 0.55, 18) else {
+                    continue;
+                };
+                if !detail_visible(slot, 31, intensity) {
+                    continue;
+                }
+                let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 32, 1) else {
+                    continue;
+                };
+                draw_peak(grid, cols, x as i32, base_y, fg);
+            }
+        }
+        BiomeKind::Desert => {
+            for x in 0..cols {
+                let Some(slot) = detail_slot(x, layer.phase, 15) else {
+                    continue;
+                };
+                if !detail_visible(slot, 41, intensity) {
+                    continue;
+                }
+                let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 42, 3) else {
+                    continue;
+                };
+                draw_cactus(grid, cols, x as i32, base_y, fg);
+            }
+        }
+        BiomeKind::Canyon => {
+            for x in 0..cols {
+                let Some(slot) = detail_slot(x, layer.phase * 0.7, 10) else {
+                    continue;
+                };
+                if !detail_visible(slot, 51, intensity) {
+                    continue;
+                }
+                let height = 1 + (detail_hash(slot, 52) % 3) as i32;
+                let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 53, height)
+                else {
+                    continue;
+                };
+                for y in 0..height {
+                    put_detail(grid, cols, x as i32, base_y - y, '▉', fg);
+                }
+            }
+        }
+        BiomeKind::Tundra => {
+            for x in 0..cols {
+                let Some(slot) = detail_slot(x, layer.phase, 8) else {
+                    continue;
+                };
+                if !detail_visible(slot, 61, intensity) {
+                    continue;
+                }
+                let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 62, 1) else {
+                    continue;
+                };
+                put_detail(grid, cols, x as i32, base_y, '.', fg);
+            }
+        }
+        BiomeKind::City => {
+            for x in 0..cols {
+                let Some(slot) = detail_slot(x, layer.phase * 0.45, 8) else {
+                    continue;
+                };
+                if !detail_visible(slot, 71, intensity) {
+                    continue;
+                }
+                let width = 2 + (detail_hash(slot, 72) % 3) as i32;
+                let height = 2 + (detail_hash(slot, 73) % 2) as i32;
+                let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 74, height)
+                else {
+                    continue;
+                };
+                draw_building(
+                    grid,
+                    cols,
+                    BuildingSpec {
+                        x: x as i32,
+                        base_y,
+                        width,
+                        height,
+                        wall: near,
+                        light: fg,
+                    },
+                );
+            }
+        }
+        BiomeKind::Coast => {
+            for x in 0..cols {
+                let Some(slot) = detail_slot(x, layer.phase, 5) else {
+                    continue;
+                };
+                if let (true, Some(base_y)) = (
+                    detail_visible(slot, 81, intensity),
+                    foreground_base_y(layer.rows, layer.horizon, slot, 82, 1),
+                ) {
+                    put_detail(grid, cols, x as i32, base_y, '~', fg);
+                }
+                if let (true, true, Some(base_y)) = (
+                    detail_hash(slot, 82).is_multiple_of(5),
+                    detail_visible(slot, 83, intensity),
+                    foreground_base_y(layer.rows, layer.horizon, slot, 84, 1),
+                ) {
+                    put_detail(grid, cols, x as i32, base_y, '╷', near);
+                }
+            }
+        }
+    }
+}
+
+fn biome_for(kind: BiomeKind) -> Biome {
+    match kind {
+        BiomeKind::Meadow => BIOMES[0],
+        BiomeKind::Forest => BIOMES[1],
+        BiomeKind::Mountains => BIOMES[2],
+        BiomeKind::Desert => BIOMES[3],
+        BiomeKind::Canyon => BIOMES[4],
+        BiomeKind::Tundra => BIOMES[5],
+        BiomeKind::City => BIOMES[6],
+        BiomeKind::Coast => BIOMES[7],
+    }
+}
+
+fn detail_slot(x: usize, phase: f32, spacing: i32) -> Option<i32> {
+    let world = x as i32 + phase.round() as i32;
+    if world.rem_euclid(spacing) == 0 {
+        Some(world.div_euclid(spacing))
+    } else {
+        None
+    }
+}
+
+fn detail_visible(slot: i32, salt: u32, intensity: f32) -> bool {
+    let threshold = (intensity.clamp(0.0, 1.0) * 100.0).round() as u32;
+    detail_hash(slot, salt) % 100 < threshold
+}
+
+fn foreground_base_y(
+    rows: usize,
+    horizon: usize,
+    slot: i32,
+    salt: u32,
+    height: i32,
+) -> Option<i32> {
+    let top = horizon.checked_add(2)? as i32;
+    let bottom = rows.checked_sub(1)? as i32;
+    let min_base = top + height - 1;
+    if min_base > bottom {
+        return None;
+    }
+
+    let lanes = (bottom - min_base + 1) as u32;
+    Some(min_base + (detail_hash(slot, salt) % lanes) as i32)
+}
+
+fn detail_hash(slot: i32, salt: u32) -> u32 {
+    let mut n = slot as u32 ^ salt.wrapping_mul(0x9E37_79B9);
+    n ^= n >> 16;
+    n = n.wrapping_mul(0x7FEB_352D);
+    n ^= n >> 15;
+    n = n.wrapping_mul(0x846C_A68B);
+    n ^ (n >> 16)
+}
+
+fn put_detail(grid: &mut [CellFmt], cols: usize, x: i32, y: i32, ch: char, fg: Color) {
+    if x < 0 || y < 0 || x >= cols as i32 {
+        return;
+    }
+    let rows = grid.len() / cols;
+    if y as usize >= rows {
+        return;
+    }
+    let i = y as usize * cols + x as usize;
+    grid[i] = CellFmt {
+        ch,
+        fg,
+        bg: grid[i].bg,
+    };
+}
+
+fn draw_pine(grid: &mut [CellFmt], cols: usize, x: i32, base_y: i32, fg: Color) {
+    put_detail(grid, cols, x, base_y - 1, '^', fg);
+    put_detail(grid, cols, x - 1, base_y, '^', fg);
+    put_detail(grid, cols, x, base_y, '|', fg);
+    put_detail(grid, cols, x + 1, base_y, '^', fg);
+}
+
+fn draw_peak(grid: &mut [CellFmt], cols: usize, x: i32, y: i32, fg: Color) {
+    put_detail(grid, cols, x, y, '^', fg);
+    put_detail(grid, cols, x - 1, y + 1, '/', fg);
+    put_detail(grid, cols, x + 1, y + 1, '\\', fg);
+}
+
+fn draw_cactus(grid: &mut [CellFmt], cols: usize, x: i32, base_y: i32, fg: Color) {
+    put_detail(grid, cols, x, base_y - 2, '│', fg);
+    put_detail(grid, cols, x - 1, base_y - 2, '┤', fg);
+    put_detail(grid, cols, x + 1, base_y - 1, '├', fg);
+    put_detail(grid, cols, x, base_y - 1, '│', fg);
+    put_detail(grid, cols, x, base_y, '│', fg);
+}
+
+fn draw_building(grid: &mut [CellFmt], cols: usize, spec: BuildingSpec) {
+    for dx in 0..spec.width {
+        for dy in 0..spec.height {
+            let ch = if (dx + dy) % 3 == 0 { '░' } else { '█' };
+            let fg = if ch == '░' { spec.light } else { spec.wall };
+            put_detail(grid, cols, spec.x + dx, spec.base_y - dy, ch, fg);
         }
     }
 }
@@ -965,6 +1726,12 @@ fn smoke_visual(age: f32) -> (char, Color) {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TextStyle {
+    fg: Color,
+    bg: Color,
+}
+
 fn put_text(
     grid: &mut [CellFmt],
     cols: usize,
@@ -972,8 +1739,7 @@ fn put_text(
     text: &str,
     left_x: i32,
     y: usize,
-    fg: Color,
-    bg: Color,
+    style: TextStyle,
 ) {
     if y >= rows {
         return;
@@ -983,7 +1749,11 @@ fn put_text(
         if x < 0 || x >= cols as i32 {
             continue;
         }
-        grid[y * cols + x as usize] = CellFmt { ch, fg, bg };
+        grid[y * cols + x as usize] = CellFmt {
+            ch,
+            fg: style.fg,
+            bg: style.bg,
+        };
     }
 }
 
@@ -1005,11 +1775,33 @@ fn draw_top_bar(grid: &mut [CellFmt], cols: usize, rows: usize, game: &Game, sky
         };
     });
     let left = " ←/→ chugga chugga   SPACE choo choo   EXIT or QUIT to exit";
-    put_text(grid, cols, rows, left, 0, 0, Color::White, bg);
+    put_text(
+        grid,
+        cols,
+        rows,
+        left,
+        0,
+        0,
+        TextStyle {
+            fg: Color::White,
+            bg,
+        },
+    );
     if game.celebrating() {
         let right = "Another wheel! ";
         let right_x = cols as i32 - right.chars().count() as i32;
-        put_text(grid, cols, rows, right, right_x.max(0), 0, Color::White, bg);
+        put_text(
+            grid,
+            cols,
+            rows,
+            right,
+            right_x.max(0),
+            0,
+            TextStyle {
+                fg: Color::White,
+                bg,
+            },
+        );
     }
 }
 
@@ -1045,5 +1837,77 @@ pub fn debug_check_sprite_widths() {
             sprite.rows.len(),
             SEG_HEIGHT
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn biome_transition_takes_half_day_cycle_at_full_speed() {
+        let start = biome_state(0.0);
+        let half = biome_state(BIOME_TRANSITION_DISTANCE * 0.5);
+        let blend_start = biome_state(BIOME_TRANSITION_DISTANCE * (1.0 - BIOME_BLEND_FRACTION));
+        let blend_mid = biome_state(BIOME_TRANSITION_DISTANCE * (1.0 - BIOME_BLEND_FRACTION * 0.5));
+        let next = biome_state(BIOME_TRANSITION_DISTANCE);
+
+        assert_eq!(start.current, BiomeKind::Meadow);
+        assert_eq!(start.next, BiomeKind::Forest);
+        assert_eq!(start.mix, 0.0);
+        assert_eq!(half.current, BiomeKind::Meadow);
+        assert_eq!(half.next, BiomeKind::Forest);
+        assert_eq!(half.mix, 0.0);
+        assert_eq!(blend_start.current, BiomeKind::Meadow);
+        assert_eq!(blend_start.next, BiomeKind::Forest);
+        assert_eq!(blend_start.mix, 0.0);
+        assert_eq!(blend_mid.current, BiomeKind::Meadow);
+        assert_eq!(blend_mid.next, BiomeKind::Forest);
+        assert!((blend_mid.mix - 0.5).abs() < f32::EPSILON);
+        assert_eq!(next.current, BiomeKind::Forest);
+        assert_eq!(next.next, BiomeKind::Mountains);
+        assert_eq!(next.mix, 0.0);
+    }
+
+    #[test]
+    fn biome_details_stay_below_tracks_and_skip_asterisks() {
+        let cols = 80;
+        let rows = 40;
+        let horizon = 20;
+
+        for (idx, biome) in BIOMES.iter().enumerate() {
+            let phase = BIOME_TRANSITION_DISTANCE * idx as f32;
+            let state = biome_state(phase);
+            let mut grid = vec![BLANK; cols * rows];
+
+            assert_eq!(state.current, biome.kind);
+
+            draw_biome_details(&mut grid, cols, rows, horizon, sky_state(0.0), state, phase);
+
+            for r in 0..=horizon + 1 {
+                for c in 0..cols {
+                    assert_eq!(
+                        grid[r * cols + c].ch,
+                        ' ',
+                        "{:?} wrote above foreground at {},{}",
+                        biome.kind,
+                        c,
+                        r
+                    );
+                }
+            }
+            assert!(
+                grid[(horizon + 2) * cols..]
+                    .iter()
+                    .any(|cell| cell.ch != ' '),
+                "{:?} drew no foreground details",
+                biome.kind
+            );
+            assert!(
+                !grid.iter().any(|cell| cell.ch == '*'),
+                "{:?} drew an asterisk detail",
+                biome.kind
+            );
+        }
     }
 }

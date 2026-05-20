@@ -16,7 +16,9 @@ impl Audio {
     pub fn new() -> Option<Self> {
         let sink = DeviceSinkBuilder::open_default_sink().ok()?;
         let chugga = Player::connect_new(sink.mixer());
-        let source = Decoder::try_from(Cursor::new(CHUGGA)).ok()?.repeat_infinite();
+        let source = Decoder::try_from(Cursor::new(CHUGGA))
+            .ok()?
+            .repeat_infinite();
         chugga.append(source);
         chugga.set_volume(0.7);
         chugga.pause();

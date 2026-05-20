@@ -4,13 +4,13 @@ use std::time::{Duration, Instant};
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{
     self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
-    enable_raw_mode, size,
+    disable_raw_mode, enable_raw_mode, size, Clear, ClearType, EnterAlternateScreen,
+    LeaveAlternateScreen,
 };
 
 mod audio;
@@ -151,7 +151,13 @@ fn main() -> io::Result<()> {
         .is_ok();
     }
 
-    let result = run(&mut game, &mut audio, &mut renderer, &mut stdout, report_key_releases);
+    let result = run(
+        &mut game,
+        &mut audio,
+        &mut renderer,
+        &mut stdout,
+        report_key_releases,
+    );
 
     if report_key_releases {
         execute!(stdout, PopKeyboardEnhancementFlags)?;
@@ -291,6 +297,11 @@ fn handle_key(
                 a.horn();
             }
         }
+        KeyCode::Char(ch)
+            if k.modifiers.contains(KeyModifiers::CONTROL) && ch.eq_ignore_ascii_case(&'b') =>
+        {
+            game.skip_to_next_biome_transition();
+        }
         KeyCode::Char(ch) => {
             if unlock.push(ch) {
                 game.quit = true;
@@ -302,7 +313,9 @@ fn handle_key(
 
 #[cfg(test)]
 mod tests {
-    use super::{Direction, InputState, UnlockState};
+    use super::{handle_key, Direction, InputState, UnlockState};
+    use crate::game::{Game, BIOME_BLEND_START_DISTANCE, BIOME_DEBUG_SKIP_MARGIN};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     #[test]
     fn held_arrow_survives_unrelated_key_release() {
@@ -354,5 +367,27 @@ mod tests {
         for ch in "uit".chars() {
             assert!(!unlock.push(ch));
         }
+    }
+
+    #[test]
+    fn ctrl_b_skips_to_biome_transition_debug_point() {
+        let mut game = Game::new(200, 40);
+        let mut audio = None;
+        let mut input = InputState::default();
+        let mut unlock = UnlockState::default();
+
+        handle_key(
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            &mut game,
+            &mut audio,
+            &mut input,
+            &mut unlock,
+            false,
+        );
+
+        assert!(
+            (game.distance_traveled - (BIOME_BLEND_START_DISTANCE - BIOME_DEBUG_SKIP_MARGIN)).abs()
+                < f32::EPSILON
+        );
     }
 }
