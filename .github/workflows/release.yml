@@ -2,10 +2,8 @@ name: Release
 
 on:
   push:
-    branches: [master]
-    paths-ignore:
-      - '**.md'
-      - '.gitignore'
+    tags:
+      - 'v*'
 
 jobs:
   build:
@@ -73,7 +71,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          TAG: v0.0.${{ github.run_number }}
+          TAG: ${{ github.ref_name }}
         run: |
           gh release create "$TAG" \
             --title "$TAG" \
