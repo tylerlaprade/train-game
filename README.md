@@ -4,8 +4,6 @@ A side-scrolling terminal steam train for toddlers.
 
 - **Right arrow / Left arrow** — drive the train forward / backward
 - **Spacebar** — toot the horn
-- **Type the spoken 3-letter word** — add a wheel. Two wheels = one full car.
-  Eight cars = train full → a new train starts below it.
 - Type `quit` or `exit` — quit
 
 The smoke billows continuously and drifts realistically based on the train's
