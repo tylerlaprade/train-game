@@ -10,6 +10,71 @@ A side-scrolling terminal steam train for toddlers.
 
 <img width="1440" height="900" alt="image" src="https://github.com/user-attachments/assets/93b71633-24cb-4604-b098-1b945824fd98" />
 
+## Download and run
+
+Download the ZIP for your platform from the
+[latest release](https://github.com/tylerlaprade/train-game/releases/latest),
+extract it, and run the game from a terminal.
+
+### macOS Apple silicon
+
+Use `train-game-macos-arm64.zip`.
+
+```sh
+cd ~/Downloads/train-game-macos-arm64
+./train-game
+```
+
+The macOS release is not signed or notarized yet. If macOS says it cannot verify
+the game, remove the quarantine attribute from the extracted release folder:
+
+```sh
+xattr -dr com.apple.quarantine ~/Downloads/train-game-macos-arm64
+```
+
+### macOS Intel
+
+Use `train-game-macos-x86_64.zip`.
+
+```sh
+cd ~/Downloads/train-game-macos-x86_64
+./train-game
+```
+
+The macOS release is not signed or notarized yet. If macOS says it cannot verify
+the game, remove the quarantine attribute from the extracted release folder:
+
+```sh
+xattr -dr com.apple.quarantine ~/Downloads/train-game-macos-x86_64
+```
+
+### Windows
+
+Use `train-game-windows-x86_64.zip`.
+
+```powershell
+cd $HOME\Downloads\train-game-windows-x86_64
+.\train-game.exe
+```
+
+Run it from Windows Terminal or PowerShell so the terminal stays open.
+
+### Linux
+
+Use `train-game-linux-x86_64.zip`.
+
+```sh
+cd ~/Downloads/train-game-linux-x86_64
+./train-game
+```
+
+If your unzip tool drops executable permissions, restore them:
+
+```sh
+chmod +x ~/Downloads/train-game-linux-x86_64/train-game
+```
+
+Minimal Linux installs may also need the ALSA runtime libraries for audio.
 
 ## Audio
 
