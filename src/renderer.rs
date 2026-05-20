@@ -645,12 +645,28 @@ fn draw_terrain_layer(
         }
         if frac > 0.125 && height_int < max_height {
             let y = horizon - 1 - height_int;
-            let idx = ((frac * 8.0) as usize).min(7);
             let i = y * cols + x;
-            grid[i] = CellFmt {
-                ch: STEPS[idx],
-                fg: color,
-                bg: grid[i].bg,
+            // For >= half-terrain cells, flip to an upper block with bg = terrain so
+            // overlays (rain, train wheels) replacing the char reveal terrain, not sky.
+            grid[i] = if frac >= 0.875 {
+                CellFmt {
+                    ch: '▔',
+                    fg: grid[i].bg,
+                    bg: color,
+                }
+            } else if frac >= 0.5 {
+                CellFmt {
+                    ch: '▀',
+                    fg: grid[i].bg,
+                    bg: color,
+                }
+            } else {
+                let idx = ((frac * 8.0) as usize).min(7);
+                CellFmt {
+                    ch: STEPS[idx],
+                    fg: color,
+                    bg: grid[i].bg,
+                }
             };
         }
     }
@@ -664,7 +680,7 @@ fn draw_tracks(grid: &mut [CellFmt], cols: usize, rows: usize, top_y: usize, pha
     let tie_offset = (phase.round() as i32).rem_euclid(12) as usize;
     for c in 0..cols {
         let i = top_y * cols + c;
-        let tie = (c + tie_offset) % 12 == 0;
+        let tie = (c + tie_offset).is_multiple_of(12);
         grid[i] = CellFmt {
             ch: if tie { '#' } else { '-' },
             fg: if tie { TRACK_TIE } else { TRACK_RAIL },
@@ -718,7 +734,7 @@ fn draw_rain(grid: &mut [CellFmt], cols: usize, _rows: usize, horizon: usize, sk
     for y in 1..horizon {
         for x in (0..cols).step_by(4) {
             let px = (x + ((y * 3 + offset) % 4)) % cols;
-            if (px + y + offset) % 3 != 0 {
+            if !(px + y + offset).is_multiple_of(3) {
                 continue;
             }
             let i = y * cols + px;
@@ -981,14 +997,14 @@ fn draw_top_bar(grid: &mut [CellFmt], cols: usize, rows: usize, game: &Game, sky
     } else {
         sky_top
     };
-    for c in 0..cols {
+    (0..cols).for_each(|c| {
         grid[c] = CellFmt {
             ch: ' ',
             fg: Color::White,
             bg,
         };
-    }
-    let left = " ←/→ drive   SPACE choo choo   EXIT or QUIT to exit";
+    });
+    let left = " ←/→ chugga chugga   SPACE choo choo   EXIT or QUIT to exit";
     put_text(grid, cols, rows, left, 0, 0, Color::White, bg);
     if game.celebrating() {
         let right = "Another wheel! ";

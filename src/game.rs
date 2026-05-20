@@ -155,7 +155,7 @@ impl Game {
     ///   * For long trains, a `TRAIN_TAIL_GAP` stretch of empty track
     ///     separates the caboose from the next engine.
     pub fn cycle(&self) -> i32 {
-        let screen = self.screen_cols as i32;
+        let screen = i32::from(self.screen_cols);
         let train = self.train_total_width();
         // 34 is the width of every car kind; using the next inserted kind
         // here would be more correct but every kind shares the same width.
