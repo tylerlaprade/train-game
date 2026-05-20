@@ -1,8 +1,8 @@
 use std::time::Instant;
 
+use rand::rngs::SmallRng;
 use rand::Rng;
 use rand::SeedableRng;
-use rand::rngs::SmallRng;
 
 pub const SEG_HEIGHT: usize = 14;
 pub const SMOKE_RISE: f32 = -8.0;
@@ -148,20 +148,19 @@ impl Game {
     /// Distance the head must travel before wrapping back to 0. Picked so
     /// three constraints all hold simultaneously:
     ///   * No two engines on screen at once (`cycle > screen + engine_width`).
-    ///   * A new car inserted behind the engine on wrap is OFF screen at the
-    ///     `+cycle` draw offset (so the player sees it scroll in from the
-    ///     right rather than pop into view mid-screen). This drives the
-    ///     `screen + engine + car + margin` floor.
+    ///   * After a new car is inserted behind the engine on wrap, the whole
+    ///     `+cycle` copy of the new train is still off screen. This prevents
+    ///     shifted cars from popping in on the right before the old train has
+    ///     fully cleared.
     ///   * For long trains, a `TRAIN_TAIL_GAP` stretch of empty track
     ///     separates the caboose from the next engine.
     pub fn cycle(&self) -> i32 {
         let screen = self.screen_cols as i32;
         let train = self.train_total_width();
-        let engine = crate::renderer::ENGINE.width as i32;
         // 34 is the width of every car kind; using the next inserted kind
         // here would be more correct but every kind shares the same width.
         let car_w = crate::renderer::car_sprite(CarKind::Boxcar).width as i32;
-        let floor = screen + engine + car_w + 5;
+        let floor = screen + train + car_w + 5;
         floor.max(train + TRAIN_TAIL_GAP)
     }
 
@@ -341,24 +340,27 @@ impl Game {
 
 #[cfg(test)]
 mod tests {
-    use super::Game;
+    use super::{Car, CarColor, CarKind, Game};
     use crate::game::TRAIN_SPEED_CELLS_PER_SEC;
     use std::time::{Duration, Instant};
 
     #[test]
-    fn cycle_keeps_new_car_off_screen_at_wrap_moment() {
-        let game = Game::new(200, 40);
+    fn cycle_keeps_post_insert_train_copy_off_screen_at_wrap_moment() {
+        let mut game = Game::new(200, 40);
+        for idx in 0..3 {
+            game.cars.push(Car {
+                kind: CarKind::rotate(idx),
+                color: CarColor::rotate(idx),
+            });
+        }
 
-        // At head_x = 0 (just after wrap), cars[0] would sit at columns
-        // [cycle - engine_w - car_w + 1, cycle - engine_w] in the +cycle copy.
-        // The left edge must be strictly past the right side of the screen.
-        let engine_w = crate::renderer::ENGINE.width as i32;
         let car_w = crate::renderer::car_sprite(super::CarKind::Boxcar).width as i32;
-        let cars0_left = game.cycle() - engine_w - car_w + 1;
+        let train_after_insert = game.train_total_width() + car_w;
+        let train_left = game.cycle() - train_after_insert + 1;
         assert!(
-            cars0_left >= game.screen_cols as i32,
-            "cars[0] would be visible at offset +cycle (left={}, screen={})",
-            cars0_left,
+            train_left >= game.screen_cols as i32,
+            "post-insert train copy would be visible at offset +cycle (left={}, screen={})",
+            train_left,
             game.screen_cols,
         );
     }
@@ -389,5 +391,25 @@ mod tests {
             announced, 0,
             "new car should be off-screen at the wrap moment so the voice waits"
         );
+    }
+
+    #[test]
+    fn new_car_announcement_fires_when_inserted_car_first_reaches_screen() {
+        let mut game = Game::new(200, 40);
+
+        game.head_x = (game.cycle() - 1) as f32;
+        game.velocity = TRAIN_SPEED_CELLS_PER_SEC;
+        game.last_tick = Instant::now() - Duration::from_secs(1);
+        assert_eq!(game.tick(), 0);
+        assert_eq!(game.unannounced_car, Some(0));
+
+        game.velocity = 0.0;
+        game.head_x = crate::renderer::ENGINE.width as f32 - 1.0;
+        assert_eq!(game.tick(), 0);
+        assert_eq!(game.unannounced_car, Some(0));
+
+        game.head_x = crate::renderer::ENGINE.width as f32;
+        assert_eq!(game.tick(), 1);
+        assert_eq!(game.unannounced_car, None);
     }
 }

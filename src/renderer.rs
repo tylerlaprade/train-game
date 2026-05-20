@@ -28,8 +28,8 @@ pub const ENGINE: Sprite = Sprite {
         "      |______________|_____________________________________/_______/        ",
         "----#----(0)======(0)======(0)======(0)======(0)======#-------------       ",
         "========={===}======={===}======={===}======={===}=================       ",
-        "----#------#----------#----------#----------#----------#-------------       ",
-        "========================================================================    ",
+        "",
+        "",
     ],
 };
 
@@ -49,8 +49,8 @@ pub const CABOOSE: Sprite = Sprite {
         "   /______________________________\\    ",
         "====#====(0)==========(0)====#--------",
         "======={===}=========={===}===========",
-        "----#--------#--------------#---------",
-        "======================================",
+        "",
+        "",
     ],
 };
 
@@ -69,8 +69,8 @@ pub const BOXCAR: Sprite = Sprite {
         " __|__________________________|__",
         "--#====(0)==========(0)====#------",
         "======{===}========{===}=========",
-        "----#-------#--------#------#----",
-        "==================================",
+        "",
+        "",
     ],
 };
 
@@ -89,8 +89,8 @@ pub const TANKER: Sprite = Sprite {
         " _______|________________|____  ",
         "--#====(0)==========(0)====#------",
         "======{===}========{===}=========",
-        "----#-------#--------#------#----",
-        "==================================",
+        "",
+        "",
     ],
 };
 
@@ -109,8 +109,8 @@ pub const HOPPER: Sprite = Sprite {
         " __|________________________|__ ",
         "--#====(0)==========(0)====#------",
         "======{===}========{===}=========",
-        "----#-------#--------#------#----",
-        "==================================",
+        "",
+        "",
     ],
 };
 
@@ -129,8 +129,8 @@ pub const PASSENGER: Sprite = Sprite {
         " __|________________________|__ ",
         "--#====(0)==========(0)====#------",
         "======{===}========{===}=========",
-        "----#-------#--------#------#----",
-        "==================================",
+        "",
+        "",
     ],
 };
 
@@ -149,8 +149,8 @@ pub const FLATCAR: Sprite = Sprite {
         " __|__________________________|_ ",
         "--#====(0)==========(0)====#------",
         "======{===}========{===}=========",
-        "----#-------#--------#------#----",
-        "==================================",
+        "",
+        "",
     ],
 };
 
@@ -169,8 +169,8 @@ pub const GONDOLA: Sprite = Sprite {
         " __|________________________|__ ",
         "--#====(0)==========(0)====#------",
         "======{===}========{===}=========",
-        "----#-------#--------#------#----",
-        "==================================",
+        "",
+        "",
     ],
 };
 
@@ -227,10 +227,20 @@ const GROUND_DARK: Color = Color::Rgb {
     g: 80,
     b: 30,
 };
-const TRACK: Color = Color::Rgb {
-    r: 90,
-    g: 70,
-    b: 50,
+const UNDERCARRIAGE: Color = Color::Rgb {
+    r: 75,
+    g: 80,
+    b: 86,
+};
+const TRACK_RAIL: Color = Color::Rgb {
+    r: 165,
+    g: 135,
+    b: 88,
+};
+const TRACK_TIE: Color = Color::Rgb {
+    r: 95,
+    g: 58,
+    b: 34,
 };
 const SKY_CYCLE_SECS: f32 = 84.0;
 
@@ -319,6 +329,7 @@ impl Renderer {
         draw_clouds(&mut self.grid, cols, rows, horizon, sky);
         draw_stars(&mut self.grid, cols, horizon, sky);
         draw_terrain(&mut self.grid, cols, horizon, sky, game.distance_traveled);
+        draw_tracks(&mut self.grid, cols, rows, horizon, game.distance_traveled);
         draw_rain(&mut self.grid, cols, rows, horizon, sky);
 
         draw_train(&mut self.grid, cols, rows, train_top, game);
@@ -645,6 +656,37 @@ fn draw_terrain_layer(
     }
 }
 
+fn draw_tracks(grid: &mut [CellFmt], cols: usize, rows: usize, top_y: usize, phase: f32) {
+    if top_y >= rows {
+        return;
+    }
+
+    let tie_offset = (phase.round() as i32).rem_euclid(12) as usize;
+    for c in 0..cols {
+        let i = top_y * cols + c;
+        let tie = (c + tie_offset) % 12 == 0;
+        grid[i] = CellFmt {
+            ch: if tie { '#' } else { '-' },
+            fg: if tie { TRACK_TIE } else { TRACK_RAIL },
+            bg: grid[i].bg,
+        };
+    }
+
+    let rail_y = top_y + 1;
+    if rail_y >= rows {
+        return;
+    }
+
+    for c in 0..cols {
+        let i = rail_y * cols + c;
+        grid[i] = CellFmt {
+            ch: '=',
+            fg: TRACK_RAIL,
+            bg: grid[i].bg,
+        };
+    }
+}
+
 fn draw_stars(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState) {
     if sky.stars <= 0.05 {
         return;
@@ -735,7 +777,6 @@ fn draw_train(grid: &mut [CellFmt], cols: usize, rows: usize, train_top: usize, 
         let left = right - (caboose.width as i32 - 1);
         draw_sprite(grid, cols, rows, caboose, Color::Red, left, train_top);
     }
-
 }
 
 fn draw_sprite(
@@ -787,10 +828,14 @@ fn char_visual(ch: char, base: Color, bg: Color) -> Option<CellFmt> {
         }),
         '(' | ')' | '{' | '}' | '#' | '-' => Some(CellFmt {
             ch,
-            fg: Color::DarkGrey,
+            fg: UNDERCARRIAGE,
             bg,
         }),
-        '=' => Some(CellFmt { ch, fg: TRACK, bg }),
+        '=' => Some(CellFmt {
+            ch,
+            fg: UNDERCARRIAGE,
+            bg,
+        }),
         '*' => Some(CellFmt {
             ch,
             fg: Color::Yellow,
@@ -948,16 +993,7 @@ fn draw_top_bar(grid: &mut [CellFmt], cols: usize, rows: usize, game: &Game, sky
     if game.celebrating() {
         let right = "Another wheel! ";
         let right_x = cols as i32 - right.chars().count() as i32;
-        put_text(
-            grid,
-            cols,
-            rows,
-            right,
-            right_x.max(0),
-            0,
-            Color::White,
-            bg,
-        );
+        put_text(grid, cols, rows, right, right_x.max(0), 0, Color::White, bg);
     }
 }
 
