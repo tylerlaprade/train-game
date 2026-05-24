@@ -1208,6 +1208,7 @@ fn draw_biome_detail_layer(grid: &mut [CellFmt], cols: usize, layer: BiomeDetail
             }
         }
         BiomeKind::Forest => {
+            let foliage = biome_lit(rgb(132, 198, 104), layer.sky.palette.ground_dark);
             for x in 0..cols {
                 let Some(slot) = detail_slot(x, layer.phase, 7) else {
                     continue;
@@ -1218,7 +1219,7 @@ fn draw_biome_detail_layer(grid: &mut [CellFmt], cols: usize, layer: BiomeDetail
                 let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 22, 2) else {
                     continue;
                 };
-                draw_pine(grid, cols, x as i32, base_y, near);
+                draw_pine(grid, cols, x as i32, base_y, foliage);
             }
         }
         BiomeKind::Mountains => {
