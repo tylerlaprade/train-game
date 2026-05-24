@@ -10,6 +10,7 @@ pub struct Audio {
     sink: MixerDeviceSink,
     chugga: Player,
     chugga_playing: bool,
+    horn: Player,
 }
 
 impl Audio {
@@ -22,10 +23,13 @@ impl Audio {
         chugga.append(source);
         chugga.set_volume(0.7);
         chugga.pause();
+        let horn = Player::connect_new(sink.mixer());
+        horn.set_volume(1.0);
         Some(Self {
             sink,
             chugga,
             chugga_playing: false,
+            horn,
         })
     }
 
@@ -40,7 +44,13 @@ impl Audio {
     }
 
     pub fn horn(&mut self) {
-        self.play_oneshot(WHISTLE, 1.0);
+        if !self.horn.empty() {
+            return;
+        }
+        let Ok(source) = Decoder::try_from(Cursor::new(WHISTLE)) else {
+            return;
+        };
+        self.horn.append(source);
     }
 
     pub fn another_wheel(&mut self) {
