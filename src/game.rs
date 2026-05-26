@@ -17,11 +17,6 @@ pub const BIOME_BLEND_START_DISTANCE: f32 =
 pub const BIOME_DEBUG_SKIP_MARGIN: f32 = TRAIN_SPEED_CELLS_PER_SEC * 2.0;
 pub const TRAIN_KEEP_MOVING_MS: u128 = 650;
 pub const CELEBRATE_MS: u128 = 900;
-/// Empty track between the caboose of one loop iteration and the engine of
-/// the next, used when the train is long enough that it drives the cycle.
-/// Larger than a car width so the gap reads as "empty track" rather than
-/// "cars touching."
-pub const TRAIN_TAIL_GAP: i32 = 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CarKind {
@@ -126,7 +121,9 @@ impl Game {
         Self {
             screen_cols: cols,
             screen_rows: rows,
-            head_x: 0.0,
+            // Engine fully visible at the left edge; caboose still off-screen
+            // left, waiting to follow the engine into the scene.
+            head_x: crate::renderer::ENGINE.width as f32 - 1.0,
             velocity: 0.0,
             distance_traveled: 0.0,
             cars: Vec::new(),
@@ -152,22 +149,19 @@ impl Game {
     }
 
     /// Distance the head must travel before wrapping back to 0. Picked so
-    /// three constraints all hold simultaneously:
-    ///   * No two engines on screen at once (`cycle > screen + engine_width`).
-    ///   * After a new car is inserted behind the engine on wrap, the whole
-    ///     `+cycle` copy of the new train is still off screen. This prevents
-    ///     shifted cars from popping in on the right before the old train has
-    ///     fully cleared.
-    ///   * For long trains, a `TRAIN_TAIL_GAP` stretch of empty track
-    ///     separates the caboose from the next engine.
+    /// the new engine reaches the left edge of the screen at the exact
+    /// moment the old caboose is halfway off the right edge — the `+cycle`
+    /// copy of the caboose takes over from the shift-0 copy seamlessly,
+    /// making the wrap invisible. Adding a car bumps `cycle` by exactly the
+    /// car's width, which keeps the visible `+cycle` caboose at the same
+    /// screen position across the insertion (the new car lands off-screen
+    /// right, between the off-screen `+cycle` engine and the on-screen
+    /// `+cycle` caboose).
     pub fn cycle(&self) -> i32 {
         let screen = i32::from(self.screen_cols);
         let train = self.train_total_width();
-        // 34 is the width of every car kind; using the next inserted kind
-        // here would be more correct but every kind shares the same width.
-        let car_w = crate::renderer::car_sprite(CarKind::Boxcar).width as i32;
-        let floor = screen + train + car_w + 5;
-        floor.max(train + TRAIN_TAIL_GAP)
+        let half_caboose = crate::renderer::CABOOSE.width as i32 / 2;
+        screen + train - half_caboose - 1
     }
 
     pub fn train_total_width(&self) -> i32 {
@@ -366,7 +360,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn cycle_keeps_post_insert_train_copy_off_screen_at_wrap_moment() {
+    fn cycle_aligns_new_engine_with_caboose_half_off_right() {
         let mut game = Game::new(200, 40);
         for idx in 0..3 {
             game.cars.push(Car {
@@ -375,14 +369,18 @@ mod tests {
             });
         }
 
-        let car_w = crate::renderer::car_sprite(super::CarKind::Boxcar).width as i32;
-        let train_after_insert = game.train_total_width() + car_w;
-        let train_left = game.cycle() - train_after_insert + 1;
-        assert!(
-            train_left >= game.screen_cols as i32,
-            "post-insert train copy would be visible at offset +cycle (left={}, screen={})",
-            train_left,
-            game.screen_cols,
+        // At head_x = cycle (the wrap moment), the shift-0 caboose's right
+        // edge sits exactly half a caboose-width past the right edge of
+        // the screen — coinciding with the shift-(-cycle) engine's right
+        // edge reaching column 0.
+        let engine_w = crate::renderer::ENGINE.width as i32;
+        let car_w = crate::renderer::car_sprite(CarKind::Boxcar).width as i32;
+        let half_caboose = crate::renderer::CABOOSE.width as i32 / 2;
+        let caboose_right_at_wrap = game.cycle() - engine_w - 3 * car_w;
+        assert_eq!(
+            caboose_right_at_wrap,
+            game.screen_cols as i32 - 1 + half_caboose,
+            "caboose should be half off the right edge at the wrap moment",
         );
     }
 
