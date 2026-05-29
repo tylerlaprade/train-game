@@ -7,7 +7,7 @@ version = "0.1.0"
 [dependencies]
 crossterm = "0.27.0"
 rand = { version = "0.8.5", features = ["small_rng"] }
-rodio = "0.22.1"
+rodio = { version = "0.22.1", default-features = false, features = ["playback", "claxon"] }
 
 [profile.release]
 opt-level = 3
