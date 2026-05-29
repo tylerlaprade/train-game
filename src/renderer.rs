@@ -1471,12 +1471,16 @@ fn draw_stars(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState) 
     }
     let star_rows = horizon.saturating_sub(2).max(1);
     for i in 0..(cols / 5).max(12) {
-        let x = (i * 37 + 11) % cols;
-        let y = 1 + ((i * 17 + 5) % star_rows);
+        let x = (detail_hash(i as i32, 0x5354_4152) % cols as u32) as usize;
+        let y = 1 + (detail_hash(i as i32, 0x0053_4B59) % star_rows as u32) as usize;
         if y >= horizon {
             continue;
         }
-        let ch = if i % 4 == 0 { '*' } else { '.' };
+        let ch = if detail_hash(i as i32, 0x2A2A_2A2A) % 4 == 0 {
+            '*'
+        } else {
+            '.'
+        };
         let fg = blend(sky.palette.top, rgb(245, 245, 210), sky.stars);
         grid[y * cols + x] = CellFmt {
             ch,
