@@ -6,8 +6,8 @@ use crossterm::style::{Color, Print, ResetColor, SetBackgroundColor, SetForegrou
 use crossterm::terminal::{Clear, ClearType};
 
 use crate::game::{
-    BIOME_BLEND_FRACTION, BIOME_TRANSITION_DISTANCE, CarColor, CarKind, DAY_CYCLE_SECS, Game,
-    SEG_HEIGHT,
+    BIOME_BLEND_FRACTION, BIOME_BLEND_START_DISTANCE, BIOME_TRANSITION_DISTANCE, CarColor, CarKind,
+    DAY_CYCLE_SECS, Game, SEG_HEIGHT,
 };
 
 pub struct Sprite {
@@ -304,7 +304,7 @@ struct BiomeState {
 #[derive(Clone, Copy)]
 struct TerrainLayer {
     color: Color,
-    phase: f32,
+    scroll: f32,
     freq: f32,
     base: f32,
     amp: f32,
@@ -327,7 +327,6 @@ struct BiomeDetailLayer {
     horizon: usize,
     sky: SkyState,
     kind: BiomeKind,
-    intensity: f32,
     phase: f32,
 }
 
@@ -646,6 +645,8 @@ const BLANK: CellFmt = CellFmt {
     fg: Color::Reset,
     bg: Color::Reset,
 };
+const TERRAIN_FAR_SCROLL_FREQ: f32 = 0.026;
+const TERRAIN_NEAR_SCROLL_FREQ: f32 = 0.052;
 
 pub struct Renderer {
     grid: Vec<CellFmt>,
@@ -722,7 +723,6 @@ impl Renderer {
             rows,
             horizon,
             sky,
-            biome,
             game.distance_traveled,
         );
         draw_rain(&mut self.grid, cols, rows, horizon, sky);
@@ -1057,7 +1057,7 @@ fn draw_terrain(
         horizon,
         TerrainLayer {
             color: far,
-            phase: phase * 0.15,
+            scroll: phase * 0.15 * TERRAIN_FAR_SCROLL_FREQ,
             freq: biome.far_freq,
             base: biome.far_base,
             amp: biome.far_amp,
@@ -1071,7 +1071,7 @@ fn draw_terrain(
         horizon,
         TerrainLayer {
             color: near,
-            phase: phase * 0.4,
+            scroll: phase * 0.4 * TERRAIN_NEAR_SCROLL_FREQ,
             freq: biome.near_freq,
             base: biome.near_base,
             amp: biome.near_amp,
@@ -1087,10 +1087,10 @@ fn draw_terrain_layer(grid: &mut [CellFmt], cols: usize, horizon: usize, layer: 
         return;
     }
     for x in 0..cols {
-        let xf = x as f32 + layer.phase;
+        let base_phase = x as f32 * layer.freq + layer.scroll;
         let h = layer.base
-            + layer.amp * 0.5 * (1.0 + (xf * layer.freq).sin())
-            + layer.detail_amp * 0.5 * (xf * layer.freq * 3.1 + 1.3).sin();
+            + layer.amp * 0.5 * (1.0 + base_phase.sin())
+            + layer.detail_amp * 0.5 * (base_phase * 3.1 + 1.3).sin();
         if h <= 0.0 {
             continue;
         }
@@ -1140,45 +1140,28 @@ fn draw_biome_details(
     rows: usize,
     horizon: usize,
     sky: SkyState,
-    biome: BiomeState,
     phase: f32,
 ) {
     if horizon + 2 >= rows {
         return;
     }
 
-    draw_biome_detail_layer(
-        grid,
-        cols,
-        BiomeDetailLayer {
-            rows,
-            horizon,
-            sky,
-            kind: biome.current,
-            intensity: 1.0 - biome.mix,
-            phase,
-        },
-    );
-    draw_biome_detail_layer(
-        grid,
-        cols,
-        BiomeDetailLayer {
-            rows,
-            horizon,
-            sky,
-            kind: biome.next,
-            intensity: biome.mix,
-            phase,
-        },
-    );
+    for biome in BIOMES {
+        draw_biome_detail_layer(
+            grid,
+            cols,
+            BiomeDetailLayer {
+                rows,
+                horizon,
+                sky,
+                kind: biome.kind,
+                phase,
+            },
+        );
+    }
 }
 
 fn draw_biome_detail_layer(grid: &mut [CellFmt], cols: usize, layer: BiomeDetailLayer) {
-    let intensity = layer.intensity.clamp(0.0, 1.0);
-    if intensity < 0.08 {
-        return;
-    }
-
     let biome = biome_for(layer.kind);
     let fg = blend(
         biome_lit(biome.accent, layer.sky.palette.horizon),
@@ -1190,12 +1173,9 @@ fn draw_biome_detail_layer(grid: &mut [CellFmt], cols: usize, layer: BiomeDetail
     match layer.kind {
         BiomeKind::Meadow => {
             for x in 0..cols {
-                let Some(slot) = detail_slot(x, layer.phase, 9) else {
+                let Some(slot) = detail_slot_for_kind(x, layer.phase, layer.kind, 9, cols) else {
                     continue;
                 };
-                if !detail_visible(slot, 11, intensity) {
-                    continue;
-                }
                 let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 12, 1) else {
                     continue;
                 };
@@ -1210,12 +1190,9 @@ fn draw_biome_detail_layer(grid: &mut [CellFmt], cols: usize, layer: BiomeDetail
         BiomeKind::Forest => {
             let foliage = biome_lit(rgb(132, 198, 104), layer.sky.palette.ground_dark);
             for x in 0..cols {
-                let Some(slot) = detail_slot(x, layer.phase, 7) else {
+                let Some(slot) = detail_slot_for_kind(x, layer.phase, layer.kind, 7, cols) else {
                     continue;
                 };
-                if !detail_visible(slot, 21, intensity) {
-                    continue;
-                }
                 let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 22, 2) else {
                     continue;
                 };
@@ -1224,12 +1201,9 @@ fn draw_biome_detail_layer(grid: &mut [CellFmt], cols: usize, layer: BiomeDetail
         }
         BiomeKind::Mountains => {
             for x in 0..cols {
-                let Some(slot) = detail_slot(x, layer.phase * 0.55, 18) else {
+                let Some(slot) = detail_slot_for_kind(x, layer.phase, layer.kind, 18, cols) else {
                     continue;
                 };
-                if !detail_visible(slot, 31, intensity) {
-                    continue;
-                }
                 let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 32, 1) else {
                     continue;
                 };
@@ -1238,12 +1212,9 @@ fn draw_biome_detail_layer(grid: &mut [CellFmt], cols: usize, layer: BiomeDetail
         }
         BiomeKind::Desert => {
             for x in 0..cols {
-                let Some(slot) = detail_slot(x, layer.phase, 15) else {
+                let Some(slot) = detail_slot_for_kind(x, layer.phase, layer.kind, 15, cols) else {
                     continue;
                 };
-                if !detail_visible(slot, 41, intensity) {
-                    continue;
-                }
                 let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 42, 3) else {
                     continue;
                 };
@@ -1252,12 +1223,9 @@ fn draw_biome_detail_layer(grid: &mut [CellFmt], cols: usize, layer: BiomeDetail
         }
         BiomeKind::Canyon => {
             for x in 0..cols {
-                let Some(slot) = detail_slot(x, layer.phase * 0.7, 10) else {
+                let Some(slot) = detail_slot_for_kind(x, layer.phase, layer.kind, 10, cols) else {
                     continue;
                 };
-                if !detail_visible(slot, 51, intensity) {
-                    continue;
-                }
                 let height = 1 + (detail_hash(slot, 52) % 3) as i32;
                 let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 53, height)
                 else {
@@ -1270,12 +1238,9 @@ fn draw_biome_detail_layer(grid: &mut [CellFmt], cols: usize, layer: BiomeDetail
         }
         BiomeKind::Tundra => {
             for x in 0..cols {
-                let Some(slot) = detail_slot(x, layer.phase, 8) else {
+                let Some(slot) = detail_slot_for_kind(x, layer.phase, layer.kind, 8, cols) else {
                     continue;
                 };
-                if !detail_visible(slot, 61, intensity) {
-                    continue;
-                }
                 let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 62, 1) else {
                     continue;
                 };
@@ -1284,12 +1249,9 @@ fn draw_biome_detail_layer(grid: &mut [CellFmt], cols: usize, layer: BiomeDetail
         }
         BiomeKind::City => {
             for x in 0..cols {
-                let Some(slot) = detail_slot(x, layer.phase * 0.45, 8) else {
+                let Some(slot) = detail_slot_for_kind(x, layer.phase, layer.kind, 8, cols) else {
                     continue;
                 };
-                if !detail_visible(slot, 71, intensity) {
-                    continue;
-                }
                 let width = 2 + (detail_hash(slot, 72) % 3) as i32;
                 let height = 2 + (detail_hash(slot, 73) % 2) as i32;
                 let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 74, height)
@@ -1312,18 +1274,14 @@ fn draw_biome_detail_layer(grid: &mut [CellFmt], cols: usize, layer: BiomeDetail
         }
         BiomeKind::Coast => {
             for x in 0..cols {
-                let Some(slot) = detail_slot(x, layer.phase, 5) else {
+                let Some(slot) = detail_slot_for_kind(x, layer.phase, layer.kind, 5, cols) else {
                     continue;
                 };
-                if let (true, Some(base_y)) = (
-                    detail_visible(slot, 81, intensity),
-                    foreground_base_y(layer.rows, layer.horizon, slot, 82, 1),
-                ) {
+                if let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 82, 1) {
                     put_detail(grid, cols, x as i32, base_y, '~', fg);
                 }
-                if let (true, true, Some(base_y)) = (
+                if let (true, Some(base_y)) = (
                     detail_hash(slot, 82).is_multiple_of(5),
-                    detail_visible(slot, 83, intensity),
                     foreground_base_y(layer.rows, layer.horizon, slot, 84, 1),
                 ) {
                     put_detail(grid, cols, x as i32, base_y, '╷', near);
@@ -1346,6 +1304,60 @@ fn biome_for(kind: BiomeKind) -> Biome {
     }
 }
 
+fn detail_slot_for_kind(
+    x: usize,
+    phase: f32,
+    kind: BiomeKind,
+    spacing: i32,
+    cols: usize,
+) -> Option<i32> {
+    let scale = detail_phase_scale(kind);
+    let slot = detail_slot(x, phase * scale, spacing)?;
+    let world = slot * spacing;
+    if detail_biome_for_layer_world(world, slot, scale, cols) == kind {
+        Some(slot)
+    } else {
+        None
+    }
+}
+
+fn detail_phase_scale(kind: BiomeKind) -> f32 {
+    match kind {
+        BiomeKind::Mountains => 0.55,
+        BiomeKind::Canyon => 0.7,
+        BiomeKind::City => 0.45,
+        _ => 1.0,
+    }
+}
+
+fn detail_biome_for_layer_world(world: i32, slot: i32, phase_scale: f32, cols: usize) -> BiomeKind {
+    let transition_distance = BIOME_TRANSITION_DISTANCE * phase_scale;
+    let blend_width = BIOME_TRANSITION_DISTANCE * BIOME_BLEND_FRACTION * phase_scale;
+    let band_start_offset = BIOME_BLEND_START_DISTANCE * phase_scale + cols as f32;
+    let world = world as f32;
+    let transition_segment = ((world - band_start_offset) / transition_distance).floor();
+
+    if world >= 0.0 && transition_segment < 0.0 {
+        return BIOMES[0].kind;
+    }
+
+    let from_idx = (transition_segment as i32).rem_euclid(BIOMES.len() as i32) as usize;
+    let to_idx = (from_idx + 1) % BIOMES.len();
+    let local = world - (transition_segment * transition_distance + band_start_offset);
+
+    if local >= blend_width {
+        return BIOMES[to_idx].kind;
+    }
+
+    let mix = smoothstep(local / blend_width);
+    let threshold = (mix * 100.0).round() as u32;
+    if detail_hash(slot, 0xB10E_D17A) % 100 < threshold {
+        BIOMES[to_idx].kind
+    } else {
+        BIOMES[from_idx].kind
+    }
+}
+
 fn detail_slot(x: usize, phase: f32, spacing: i32) -> Option<i32> {
     let world = x as i32 + phase.round() as i32;
     if world.rem_euclid(spacing) == 0 {
@@ -1353,11 +1365,6 @@ fn detail_slot(x: usize, phase: f32, spacing: i32) -> Option<i32> {
     } else {
         None
     }
-}
-
-fn detail_visible(slot: i32, salt: u32, intensity: f32) -> bool {
-    let threshold = (intensity.clamp(0.0, 1.0) * 100.0).round() as u32;
-    detail_hash(slot, salt) % 100 < threshold
 }
 
 fn foreground_base_y(
@@ -1875,6 +1882,55 @@ mod tests {
     }
 
     #[test]
+    fn biome_detail_transition_starts_beyond_visible_slots() {
+        let cols = 80;
+        let phase_scale = detail_phase_scale(BiomeKind::Meadow);
+        let first_visible = (BIOME_BLEND_START_DISTANCE * phase_scale).round() as i32;
+
+        for world in first_visible..first_visible + cols as i32 {
+            assert_eq!(
+                detail_biome_for_layer_world(world, world, phase_scale, cols),
+                BiomeKind::Meadow
+            );
+        }
+    }
+
+    #[test]
+    fn slow_biome_detail_layers_keep_visible_slots_after_boundary() {
+        let cols = 200;
+        let phase_scale = detail_phase_scale(BiomeKind::City);
+        let city_idx = 6.0;
+        let boundary = ((city_idx + 1.0) * BIOME_TRANSITION_DISTANCE * phase_scale).round() as i32;
+
+        assert_eq!(
+            detail_biome_for_layer_world(boundary, boundary, phase_scale, cols),
+            BiomeKind::City
+        );
+    }
+
+    #[test]
+    fn biome_detail_transition_band_intermingles_biomes() {
+        let cols = 80;
+        let phase_scale = detail_phase_scale(BiomeKind::Meadow);
+        let band_start = (BIOME_BLEND_START_DISTANCE * phase_scale + cols as f32).round() as i32;
+        let band_end = band_start
+            + (BIOME_TRANSITION_DISTANCE * BIOME_BLEND_FRACTION * phase_scale).round() as i32;
+        let mut saw_meadow = false;
+        let mut saw_forest = false;
+
+        for world in band_start..band_end {
+            match detail_biome_for_layer_world(world, world, phase_scale, cols) {
+                BiomeKind::Meadow => saw_meadow = true,
+                BiomeKind::Forest => saw_forest = true,
+                other => panic!("unexpected biome in first transition band: {other:?}"),
+            }
+        }
+
+        assert!(saw_meadow);
+        assert!(saw_forest);
+    }
+
+    #[test]
     fn biome_details_stay_below_tracks_and_skip_asterisks() {
         let cols = 80;
         let rows = 40;
@@ -1887,7 +1943,7 @@ mod tests {
 
             assert_eq!(state.current, biome.kind);
 
-            draw_biome_details(&mut grid, cols, rows, horizon, sky_state(0.0), state, phase);
+            draw_biome_details(&mut grid, cols, rows, horizon, sky_state(0.0), phase);
 
             for r in 0..=horizon + 1 {
                 for c in 0..cols {

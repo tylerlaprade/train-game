@@ -338,9 +338,10 @@ impl Game {
     }
 
     pub fn skip_to_next_biome_transition(&mut self) {
-        let segment = (self.distance_traveled / BIOME_TRANSITION_DISTANCE).floor();
+        let distance = self.distance_traveled.max(0.0);
+        let segment = (distance / BIOME_TRANSITION_DISTANCE).floor();
         let transition_start = segment * BIOME_TRANSITION_DISTANCE + BIOME_BLEND_START_DISTANCE;
-        let target = if self.distance_traveled < transition_start - BIOME_DEBUG_SKIP_MARGIN {
+        let target = if distance < transition_start {
             transition_start
         } else {
             (segment + 1.0) * BIOME_TRANSITION_DISTANCE + BIOME_BLEND_START_DISTANCE
@@ -451,5 +452,29 @@ mod tests {
                 .abs()
                 < f32::EPSILON
         );
+    }
+
+    #[test]
+    fn debug_skip_ignores_backward_biome_segments() {
+        let mut game = Game::new(200, 40);
+        game.distance_traveled = -BIOME_TRANSITION_DISTANCE * 2.0;
+
+        game.skip_to_next_biome_transition();
+
+        assert!(
+            (game.distance_traveled - (BIOME_BLEND_START_DISTANCE - BIOME_DEBUG_SKIP_MARGIN)).abs()
+                < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn debug_skip_stays_on_upcoming_transition_before_blend_starts() {
+        let mut game = Game::new(200, 40);
+        game.skip_to_next_biome_transition();
+        let first_debug_point = game.distance_traveled;
+
+        game.skip_to_next_biome_transition();
+
+        assert!((game.distance_traveled - first_debug_point).abs() < f32::EPSILON);
     }
 }
