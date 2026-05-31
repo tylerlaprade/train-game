@@ -294,14 +294,6 @@ struct BiomeVisual {
 }
 
 #[derive(Clone, Copy)]
-struct BiomeState {
-    current: BiomeKind,
-    next: BiomeKind,
-    mix: f32,
-    visual: BiomeVisual,
-}
-
-#[derive(Clone, Copy)]
 struct TerrainLayer {
     color: Color,
     scroll: f32,
@@ -703,9 +695,9 @@ impl Renderer {
         let train_top = game.train_top();
         let horizon = train_top + SEG_HEIGHT - 2;
         let sky = sky_state(game.started_at.elapsed().as_secs_f32());
-        let biome = biome_state(game.distance_traveled);
+        let biome = biome_visual(game.distance_traveled);
 
-        draw_sky(&mut self.grid, cols, rows, horizon, sky, biome.visual);
+        draw_sky(&mut self.grid, cols, rows, horizon, sky, biome);
         draw_clouds(&mut self.grid, cols, rows, horizon, sky);
         draw_stars(&mut self.grid, cols, horizon, sky);
         draw_terrain(
@@ -713,7 +705,7 @@ impl Renderer {
             cols,
             horizon,
             sky,
-            biome.visual,
+            biome,
             game.distance_traveled,
         );
         draw_tracks(&mut self.grid, cols, rows, horizon, game.distance_traveled);
@@ -889,7 +881,12 @@ fn bell(x: f32, center: f32, half_width: f32) -> f32 {
     (1.0 - ((x - center).abs() / half_width)).clamp(0.0, 1.0)
 }
 
-fn biome_state(distance: f32) -> BiomeState {
+fn biome_visual(distance: f32) -> BiomeVisual {
+    let (current, next, mix) = biome_transition(distance);
+    blend_biome(current, next, mix)
+}
+
+fn biome_transition(distance: f32) -> (Biome, Biome, f32) {
     let progress = distance / BIOME_TRANSITION_DISTANCE;
     let base = progress.floor();
     let local = progress - base;
@@ -904,12 +901,7 @@ fn biome_state(distance: f32) -> BiomeState {
     let current = BIOMES[current_idx];
     let next = BIOMES[next_idx];
 
-    BiomeState {
-        current: current.kind,
-        next: next.kind,
-        mix,
-        visual: blend_biome(current, next, mix),
-    }
+    (current, next, mix)
 }
 
 fn blend_biome(a: Biome, b: Biome, t: f32) -> BiomeVisual {
@@ -1858,27 +1850,30 @@ mod tests {
 
     #[test]
     fn biome_transition_takes_half_day_cycle_at_full_speed() {
-        let start = biome_state(0.0);
-        let half = biome_state(BIOME_TRANSITION_DISTANCE * 0.5);
-        let blend_start = biome_state(BIOME_TRANSITION_DISTANCE * (1.0 - BIOME_BLEND_FRACTION));
-        let blend_mid = biome_state(BIOME_TRANSITION_DISTANCE * (1.0 - BIOME_BLEND_FRACTION * 0.5));
-        let next = biome_state(BIOME_TRANSITION_DISTANCE);
+        let (start_current, start_next, start_mix) = biome_transition(0.0);
+        let (half_current, half_next, half_mix) =
+            biome_transition(BIOME_TRANSITION_DISTANCE * 0.5);
+        let (blend_start_current, blend_start_next, blend_start_mix) =
+            biome_transition(BIOME_TRANSITION_DISTANCE * (1.0 - BIOME_BLEND_FRACTION));
+        let (blend_mid_current, blend_mid_next, blend_mid_mix) =
+            biome_transition(BIOME_TRANSITION_DISTANCE * (1.0 - BIOME_BLEND_FRACTION * 0.5));
+        let (next_current, next_next, next_mix) = biome_transition(BIOME_TRANSITION_DISTANCE);
 
-        assert_eq!(start.current, BiomeKind::Meadow);
-        assert_eq!(start.next, BiomeKind::Forest);
-        assert_eq!(start.mix, 0.0);
-        assert_eq!(half.current, BiomeKind::Meadow);
-        assert_eq!(half.next, BiomeKind::Forest);
-        assert_eq!(half.mix, 0.0);
-        assert_eq!(blend_start.current, BiomeKind::Meadow);
-        assert_eq!(blend_start.next, BiomeKind::Forest);
-        assert_eq!(blend_start.mix, 0.0);
-        assert_eq!(blend_mid.current, BiomeKind::Meadow);
-        assert_eq!(blend_mid.next, BiomeKind::Forest);
-        assert!((blend_mid.mix - 0.5).abs() < f32::EPSILON);
-        assert_eq!(next.current, BiomeKind::Forest);
-        assert_eq!(next.next, BiomeKind::Mountains);
-        assert_eq!(next.mix, 0.0);
+        assert_eq!(start_current.kind, BiomeKind::Meadow);
+        assert_eq!(start_next.kind, BiomeKind::Forest);
+        assert_eq!(start_mix, 0.0);
+        assert_eq!(half_current.kind, BiomeKind::Meadow);
+        assert_eq!(half_next.kind, BiomeKind::Forest);
+        assert_eq!(half_mix, 0.0);
+        assert_eq!(blend_start_current.kind, BiomeKind::Meadow);
+        assert_eq!(blend_start_next.kind, BiomeKind::Forest);
+        assert_eq!(blend_start_mix, 0.0);
+        assert_eq!(blend_mid_current.kind, BiomeKind::Meadow);
+        assert_eq!(blend_mid_next.kind, BiomeKind::Forest);
+        assert!((blend_mid_mix - 0.5).abs() < f32::EPSILON);
+        assert_eq!(next_current.kind, BiomeKind::Forest);
+        assert_eq!(next_next.kind, BiomeKind::Mountains);
+        assert_eq!(next_mix, 0.0);
     }
 
     #[test]
@@ -1938,10 +1933,10 @@ mod tests {
 
         for (idx, biome) in BIOMES.iter().enumerate() {
             let phase = BIOME_TRANSITION_DISTANCE * idx as f32;
-            let state = biome_state(phase);
+            let (current, _, _) = biome_transition(phase);
             let mut grid = vec![BLANK; cols * rows];
 
-            assert_eq!(state.current, biome.kind);
+            assert_eq!(current.kind, biome.kind);
 
             draw_biome_details(&mut grid, cols, rows, horizon, sky_state(0.0), phase);
 
