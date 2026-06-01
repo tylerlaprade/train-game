@@ -645,6 +645,7 @@ pub struct Renderer {
     last_grid: Vec<CellFmt>,
     cols: usize,
     rows: usize,
+    truecolor: bool,
 }
 
 impl Default for Renderer {
@@ -660,6 +661,18 @@ impl Renderer {
             last_grid: Vec::new(),
             cols: 0,
             rows: 0,
+            truecolor: truecolor_supported(),
+        }
+    }
+
+    /// Terminals without 24-bit color (e.g. Apple's Terminal.app) garble
+    /// `Color::Rgb` sequences, so fall back to the nearest xterm-256 entry.
+    fn adapt(&self, c: Color) -> Color {
+        match c {
+            Color::Rgb { r, g, b } if !self.truecolor => {
+                Color::AnsiValue(rgb_to_ansi256(r, g, b))
+            }
+            _ => c,
         }
     }
 
@@ -707,6 +720,7 @@ impl Renderer {
             sky,
             biome,
             game.distance_traveled,
+            self.truecolor,
         );
         draw_tracks(&mut self.grid, cols, rows, horizon, game.distance_traveled);
         draw_biome_details(
@@ -739,11 +753,11 @@ impl Renderer {
                         queue!(out, cursor::MoveTo(c as u16, r as u16))?;
                     }
                     if cell.fg != cur_fg {
-                        queue!(out, SetForegroundColor(cell.fg))?;
+                        queue!(out, SetForegroundColor(self.adapt(cell.fg)))?;
                         cur_fg = cell.fg;
                     }
                     if cell.bg != cur_bg {
-                        queue!(out, SetBackgroundColor(cell.bg))?;
+                        queue!(out, SetBackgroundColor(self.adapt(cell.bg)))?;
                         cur_bg = cell.bg;
                     }
                     queue!(out, Print(cell.ch))?;
@@ -784,6 +798,55 @@ fn lerp(a: u8, b: u8, t: f32) -> u8 {
 
 fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::Rgb { r, g, b }
+}
+
+/// True when the terminal advertises 24-bit color via `COLORTERM`. Terminals
+/// that don't (notably Apple's Terminal.app) only handle the xterm-256 palette.
+fn truecolor_supported() -> bool {
+    matches!(
+        std::env::var("COLORTERM").as_deref(),
+        Ok("truecolor") | Ok("24bit")
+    )
+}
+
+/// Map a 24-bit color to the closest xterm-256 palette index, choosing between
+/// the 6×6×6 color cube (16–231) and the grayscale ramp (232–255).
+fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
+    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+
+    let nearest_level = |v: u8| -> usize {
+        LEVELS
+            .iter()
+            .enumerate()
+            .min_by_key(|&(_, &lvl)| (v as i32 - lvl as i32).abs())
+            .map(|(i, _)| i)
+            .unwrap()
+    };
+    let dist = |a: (u8, u8, u8), x: u8, y: u8, z: u8| -> i32 {
+        let dr = a.0 as i32 - x as i32;
+        let dg = a.1 as i32 - y as i32;
+        let db = a.2 as i32 - z as i32;
+        dr * dr + dg * dg + db * db
+    };
+
+    let (ri, gi, bi) = (nearest_level(r), nearest_level(g), nearest_level(b));
+    let cube = (LEVELS[ri], LEVELS[gi], LEVELS[bi]);
+    let cube_idx = (16 + 36 * ri + 6 * gi + bi) as u8;
+
+    // The grayscale ramp only wins for near-neutral tones. Gating it behind low
+    // chroma stops colorful values (e.g. meadow greens) from washing out to gray
+    // just because the nearest coarse cube corner sits farther in raw RGB space.
+    let chroma = r.max(g).max(b) - r.min(g).min(b);
+    if chroma <= 16 {
+        // Grayscale ramp values run 8, 18, .. 238 at indices 232..=255.
+        let avg = (r as u32 + g as u32 + b as u32) / 3;
+        let gray_idx = (((avg as i32 - 8) + 5) / 10).clamp(0, 23) as u8;
+        let gray_val = 8 + gray_idx * 10;
+        if dist((gray_val, gray_val, gray_val), r, g, b) < dist(cube, r, g, b) {
+            return 232 + gray_idx;
+        }
+    }
+    cube_idx
 }
 
 fn sky_state(elapsed: f32) -> SkyState {
@@ -1030,6 +1093,7 @@ fn draw_terrain(
     sky: SkyState,
     biome: BiomeVisual,
     phase: f32,
+    truecolor: bool,
 ) {
     if horizon < 3 {
         return;
@@ -1055,6 +1119,7 @@ fn draw_terrain(
             amp: biome.far_amp,
             detail_amp: biome.far_detail,
         },
+        truecolor,
     );
     // Near hills: slightly darker than foreground grass, not pitch-black
     draw_terrain_layer(
@@ -1069,10 +1134,17 @@ fn draw_terrain(
             amp: biome.near_amp,
             detail_amp: biome.near_detail,
         },
+        truecolor,
     );
 }
 
-fn draw_terrain_layer(grid: &mut [CellFmt], cols: usize, horizon: usize, layer: TerrainLayer) {
+fn draw_terrain_layer(
+    grid: &mut [CellFmt],
+    cols: usize,
+    horizon: usize,
+    layer: TerrainLayer,
+    truecolor: bool,
+) {
     const STEPS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let max_height = horizon.saturating_sub(1);
     if max_height == 0 {
@@ -1097,7 +1169,19 @@ fn draw_terrain_layer(grid: &mut [CellFmt], cols: usize, horizon: usize, layer: 
                 bg: layer.color,
             };
         }
-        if frac > 0.125 && height_int < max_height {
+        if !truecolor {
+            // Terminal.app renders block-element glyphs with seams/hairlines, so
+            // snap the silhouette to whole cells: round the fractional top up or down.
+            if frac >= 0.5 && height_int < max_height {
+                let y = horizon - 1 - height_int;
+                let i = y * cols + x;
+                grid[i] = CellFmt {
+                    ch: ' ',
+                    fg: Color::Reset,
+                    bg: layer.color,
+                };
+            }
+        } else if frac > 0.125 && height_int < max_height {
             let y = horizon - 1 - height_int;
             let i = y * cols + x;
             // For >= half-terrain cells, flip to an upper block with bg = terrain so
@@ -1964,6 +2048,26 @@ mod tests {
                 "{:?} drew an asterisk detail",
                 biome.kind
             );
+        }
+    }
+
+    #[test]
+    fn rgb_to_ansi256_maps_into_palette() {
+        assert_eq!(rgb_to_ansi256(0, 0, 0), 16); // black cube corner
+        assert_eq!(rgb_to_ansi256(255, 255, 255), 231); // white cube corner
+        assert_eq!(rgb_to_ansi256(128, 128, 128), 244); // gray ramp exact
+        assert_eq!(rgb_to_ansi256(255, 0, 0), 196); // pure red cube
+        assert_eq!(rgb_to_ansi256(0, 0, 255), 21); // pure blue cube
+        // Colorful values must use the cube, never wash out to the gray ramp.
+        assert!(rgb_to_ansi256(58, 116, 47) < 232); // meadow ground stays green
+        assert!(rgb_to_ansi256(75, 80, 86) >= 232); // neutral metal stays gray
+        for r in (0u16..=255).step_by(17) {
+            for g in (0u16..=255).step_by(17) {
+                for b in (0u16..=255).step_by(17) {
+                    let v = rgb_to_ansi256(r as u8, g as u8, b as u8);
+                    assert!((16..=255).contains(&v), "out of range for {r},{g},{b}: {v}");
+                }
+            }
         }
     }
 }
