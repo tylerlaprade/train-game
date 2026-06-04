@@ -10,6 +10,8 @@ pub const SMOKE_MAX_AGE: f32 = 3.0;
 pub const SMOKE_SPAWN_INTERVAL: f32 = 0.08;
 pub const TRAIN_SPEED_CELLS_PER_SEC: f32 = 32.0;
 pub const DAY_CYCLE_SECS: f32 = 84.0;
+pub const RAIN_PHASE: f32 = 0.43;
+pub const TIME_DEBUG_SKIP_SECS: f32 = DAY_CYCLE_SECS * 0.125;
 pub const BIOME_TRANSITION_DISTANCE: f32 = TRAIN_SPEED_CELLS_PER_SEC * DAY_CYCLE_SECS * 0.5;
 pub const BIOME_BLEND_FRACTION: f32 = 0.25;
 pub const BIOME_BLEND_START_DISTANCE: f32 =
@@ -107,6 +109,7 @@ pub struct Game {
 
     pub rng: SmallRng,
     pub started_at: Instant,
+    time_offset_secs: f32,
     pub last_tick: Instant,
 
     pub last_move: Option<Instant>,
@@ -132,6 +135,7 @@ impl Game {
             smoke_spawn_accum: 0.0,
             rng: SmallRng::from_entropy(),
             started_at: now,
+            time_offset_secs: 0.0,
             last_tick: now,
             last_move: None,
             last_celebrate: None,
@@ -146,6 +150,20 @@ impl Game {
         if c > 0 {
             self.head_x = self.head_x.rem_euclid(c as f32);
         }
+    }
+
+    pub fn elapsed_secs(&self) -> f32 {
+        self.started_at.elapsed().as_secs_f32() + self.time_offset_secs
+    }
+
+    pub fn advance_time_of_day(&mut self) {
+        self.time_offset_secs += TIME_DEBUG_SKIP_SECS;
+    }
+
+    pub fn trigger_weather(&mut self) {
+        let current = self.elapsed_secs().rem_euclid(DAY_CYCLE_SECS);
+        let target = DAY_CYCLE_SECS * RAIN_PHASE;
+        self.time_offset_secs += (target - current).rem_euclid(DAY_CYCLE_SECS);
     }
 
     /// Distance the head must travel before wrapping back to 0. Picked so
@@ -363,13 +381,15 @@ impl Game {
         let distance = self.distance_traveled.max(0.0);
         let segment = (distance / BIOME_TRANSITION_DISTANCE).floor();
         let transition_start = segment * BIOME_TRANSITION_DISTANCE + BIOME_BLEND_START_DISTANCE;
-        let target = if distance < transition_start {
-            transition_start
+        let debug_point = transition_start - BIOME_DEBUG_SKIP_MARGIN;
+        let target = if distance <= debug_point + f32::EPSILON {
+            debug_point
         } else {
             (segment + 1.0) * BIOME_TRANSITION_DISTANCE + BIOME_BLEND_START_DISTANCE
+                - BIOME_DEBUG_SKIP_MARGIN
         };
 
-        self.distance_traveled = target - BIOME_DEBUG_SKIP_MARGIN;
+        self.distance_traveled = target;
     }
 }
 
@@ -522,5 +542,17 @@ mod tests {
         game.skip_to_next_biome_transition();
 
         assert!((game.distance_traveled - first_debug_point).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn debug_skip_does_not_jump_back_after_debug_point() {
+        let mut game = Game::new(200, 40);
+        game.distance_traveled = BIOME_BLEND_START_DISTANCE - BIOME_DEBUG_SKIP_MARGIN * 0.5;
+
+        game.skip_to_next_biome_transition();
+
+        let expected =
+            BIOME_TRANSITION_DISTANCE + BIOME_BLEND_START_DISTANCE - BIOME_DEBUG_SKIP_MARGIN;
+        assert!((game.distance_traveled - expected).abs() < f32::EPSILON);
     }
 }

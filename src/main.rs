@@ -278,11 +278,8 @@ fn run(
             a.tick_chugga(game.moving_recently());
             a.set_engine_pan(game.engine_pan());
             a.tick_rain(
-                renderer::weather_state(
-                    game.distance_traveled,
-                    game.started_at.elapsed().as_secs_f32(),
-                )
-                .rain_audio_intensity(),
+                renderer::weather_state(game.distance_traveled, game.elapsed_secs())
+                    .rain_audio_intensity(),
             );
             if cars_added > 0 {
                 a.another_wheel();
@@ -341,6 +338,16 @@ fn handle_key(
         {
             game.skip_to_next_biome_transition();
         }
+        KeyCode::Char(ch)
+            if k.modifiers.contains(KeyModifiers::CONTROL) && ch.eq_ignore_ascii_case(&'r') =>
+        {
+            game.trigger_weather();
+        }
+        KeyCode::Char(ch)
+            if k.modifiers.contains(KeyModifiers::CONTROL) && ch.eq_ignore_ascii_case(&'t') =>
+        {
+            game.advance_time_of_day();
+        }
         KeyCode::Char(ch) => {
             if unlock.push(ch) {
                 game.quit = true;
@@ -356,7 +363,10 @@ mod tests {
         Direction, HideMousePointerWhileTyping, InputState, RestoreMousePointerMode, UnlockState,
         handle_key,
     };
-    use crate::game::{BIOME_BLEND_START_DISTANCE, BIOME_DEBUG_SKIP_MARGIN, Game};
+    use crate::game::{
+        BIOME_BLEND_START_DISTANCE, BIOME_DEBUG_SKIP_MARGIN, DAY_CYCLE_SECS, Game, RAIN_PHASE,
+        TIME_DEBUG_SKIP_SECS,
+    };
     use crossterm::Command;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -432,6 +442,46 @@ mod tests {
             (game.distance_traveled - (BIOME_BLEND_START_DISTANCE - BIOME_DEBUG_SKIP_MARGIN)).abs()
                 < f32::EPSILON
         );
+    }
+
+    #[test]
+    fn ctrl_r_jumps_to_wet_time_of_day() {
+        let mut game = Game::new(200, 40);
+        let mut audio = None;
+        let mut input = InputState::default();
+        let mut unlock = UnlockState::default();
+
+        handle_key(
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+            &mut game,
+            &mut audio,
+            &mut input,
+            &mut unlock,
+            false,
+        );
+
+        let phase_time = game.elapsed_secs().rem_euclid(DAY_CYCLE_SECS);
+        assert!((phase_time - DAY_CYCLE_SECS * RAIN_PHASE).abs() < 0.05);
+    }
+
+    #[test]
+    fn ctrl_t_advances_time_of_day() {
+        let mut game = Game::new(200, 40);
+        let mut audio = None;
+        let mut input = InputState::default();
+        let mut unlock = UnlockState::default();
+        let before = game.elapsed_secs();
+
+        handle_key(
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+            &mut game,
+            &mut audio,
+            &mut input,
+            &mut unlock,
+            false,
+        );
+
+        assert!(game.elapsed_secs() >= before + TIME_DEBUG_SKIP_SECS - 0.05);
     }
 
     #[test]
