@@ -2211,8 +2211,7 @@ fn draw_top_bar(grid: &mut [CellFmt], cols: usize, rows: usize, game: &Game, sky
             bg,
         };
     });
-    let left =
-        " ←/→ chugga chugga   SPACE choo choo   Ctrl+R weather   Ctrl+T time   EXIT/QUIT exits";
+    let left = " ←/→ chugga chugga   SPACE choo choo   EXIT or QUIT to exit";
     put_text(
         grid,
         cols,
