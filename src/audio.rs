@@ -1,4 +1,5 @@
 use std::io::Cursor;
+use std::num::{NonZeroU16, NonZeroU32};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -9,6 +10,7 @@ use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 const CHUGGA: &[u8] = include_bytes!("../assets/chugga.flac");
 const WHISTLE: &[u8] = include_bytes!("../assets/whistle.flac");
 const ANOTHER_WHEEL: &[u8] = include_bytes!("../assets/another_wheel.flac");
+const RAIN_VOLUME: f32 = 0.24;
 
 /// Spatial layout for the engine sounds. The two ears straddle the screen
 /// center and the emitter slides along the same axis between them, so the chug
@@ -25,6 +27,8 @@ pub struct Audio {
     sink: MixerDeviceSink,
     chugga: Player,
     chugga_playing: bool,
+    rain: Player,
+    rain_playing: bool,
     horn: Player,
     /// Engine pan in [-1, 1], stored as `f32` bits. The render thread writes it
     /// each frame; the audio thread reads it lock-free while panning the chug
@@ -49,6 +53,11 @@ impl Audio {
         chugga.set_volume(0.9);
         chugga.pause();
 
+        let rain = Player::connect_new(sink.mixer());
+        rain.append(RainNoise::new());
+        rain.set_volume(0.0);
+        rain.pause();
+
         let horn = Player::connect_new(sink.mixer());
         horn.set_volume(1.3);
 
@@ -56,6 +65,8 @@ impl Audio {
             sink,
             chugga,
             chugga_playing: false,
+            rain,
+            rain_playing: false,
             horn,
             pan,
         })
@@ -75,6 +86,20 @@ impl Audio {
         } else if !moving && self.chugga_playing {
             self.chugga.pause();
             self.chugga_playing = false;
+        }
+    }
+
+    pub fn tick_rain(&mut self, intensity: f32) {
+        let intensity = intensity.clamp(0.0, 1.0);
+        if intensity > 0.05 {
+            self.rain.set_volume(RAIN_VOLUME * intensity);
+            if !self.rain_playing {
+                self.rain.play();
+                self.rain_playing = true;
+            }
+        } else if self.rain_playing {
+            self.rain.pause();
+            self.rain_playing = false;
         }
     }
 
@@ -120,4 +145,58 @@ where
 /// Emitter position for a given pan, sliding along the ear axis.
 fn emitter(pan: f32) -> [f32; 3] {
     [pan, 0.0, 0.0]
+}
+
+#[derive(Clone)]
+struct RainNoise {
+    state: u32,
+    low: f32,
+    mid: f32,
+}
+
+impl RainNoise {
+    fn new() -> Self {
+        Self {
+            state: 0x5EED_5EED,
+            low: 0.0,
+            mid: 0.0,
+        }
+    }
+
+    fn white(&mut self) -> f32 {
+        self.state ^= self.state << 13;
+        self.state ^= self.state >> 17;
+        self.state ^= self.state << 5;
+        let sample = (self.state >> 8) as f32 / 0x00FF_FFFF as f32;
+        sample * 2.0 - 1.0
+    }
+}
+
+impl Iterator for RainNoise {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let white = self.white();
+        self.low = self.low * 0.985 + white * 0.015;
+        self.mid = self.mid * 0.72 + white * 0.28;
+        Some((self.low * 0.55 + self.mid * 0.45).clamp(-1.0, 1.0))
+    }
+}
+
+impl Source for RainNoise {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> rodio::ChannelCount {
+        NonZeroU16::new(1).unwrap()
+    }
+
+    fn sample_rate(&self) -> rodio::SampleRate {
+        NonZeroU32::new(44_100).unwrap()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
 }

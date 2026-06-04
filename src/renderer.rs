@@ -279,10 +279,12 @@ struct Biome {
 
 #[derive(Clone, Copy)]
 struct BiomeVisual {
+    kind: BiomeKind,
     ground: Color,
     ground_dark: Color,
     far: Color,
     near: Color,
+    accent: Color,
     far_freq: f32,
     far_base: f32,
     far_amp: f32,
@@ -293,9 +295,18 @@ struct BiomeVisual {
     near_detail: f32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TerrainDepth {
+    Far,
+    Near,
+}
+
 #[derive(Clone, Copy)]
 struct TerrainLayer {
+    kind: BiomeKind,
     color: Color,
+    accent: Color,
+    depth: TerrainDepth,
     scroll: f32,
     freq: f32,
     base: f32,
@@ -627,9 +638,31 @@ struct SkyPalette {
 #[derive(Clone, Copy)]
 struct SkyState {
     palette: SkyPalette,
+    elapsed: f32,
     phase_time: f32,
     rain: f32,
     stars: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrecipitationKind {
+    Rain,
+    Snow,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct WeatherState {
+    pub intensity: f32,
+    pub kind: PrecipitationKind,
+}
+
+impl WeatherState {
+    pub fn rain_audio_intensity(self) -> f32 {
+        match self.kind {
+            PrecipitationKind::Rain => self.intensity,
+            PrecipitationKind::Snow => 0.0,
+        }
+    }
 }
 
 const BLANK: CellFmt = CellFmt {
@@ -669,9 +702,7 @@ impl Renderer {
     /// `Color::Rgb` sequences, so fall back to the nearest xterm-256 entry.
     fn adapt(&self, c: Color) -> Color {
         match c {
-            Color::Rgb { r, g, b } if !self.truecolor => {
-                Color::AnsiValue(rgb_to_ansi256(r, g, b))
-            }
+            Color::Rgb { r, g, b } if !self.truecolor => Color::AnsiValue(rgb_to_ansi256(r, g, b)),
             _ => c,
         }
     }
@@ -708,6 +739,7 @@ impl Renderer {
         let train_top = game.train_top();
         let horizon = train_top + SEG_HEIGHT - 2;
         let sky = sky_state(game.started_at.elapsed().as_secs_f32());
+        let weather = weather_state_from_sky(game.distance_traveled, sky);
         let biome = biome_visual(game.distance_traveled);
 
         draw_sky(&mut self.grid, cols, rows, horizon, sky, biome);
@@ -731,7 +763,7 @@ impl Renderer {
             sky,
             game.distance_traveled,
         );
-        draw_rain(&mut self.grid, cols, rows, horizon, sky);
+        draw_precipitation(&mut self.grid, cols, horizon, sky, weather);
 
         draw_train(&mut self.grid, cols, rows, train_top, game);
         draw_smoke(&mut self.grid, cols, rows, train_top, game);
@@ -917,9 +949,24 @@ fn sky_state(elapsed: f32) -> SkyState {
 
     SkyState {
         palette,
+        elapsed,
         phase_time,
         rain: bell(phase, 0.43, 0.10),
         stars: smoothstep((phase - 0.67) / 0.08) * (1.0 - smoothstep((phase - 0.94) / 0.05)),
+    }
+}
+
+pub fn weather_state(distance: f32, elapsed: f32) -> WeatherState {
+    weather_state_from_sky(distance, sky_state(elapsed))
+}
+
+fn weather_state_from_sky(distance: f32, sky: SkyState) -> WeatherState {
+    WeatherState {
+        intensity: sky.rain,
+        kind: match dominant_biome_kind(distance) {
+            BiomeKind::Tundra => PrecipitationKind::Snow,
+            _ => PrecipitationKind::Rain,
+        },
     }
 }
 
@@ -967,12 +1014,19 @@ fn biome_transition(distance: f32) -> (Biome, Biome, f32) {
     (current, next, mix)
 }
 
+fn dominant_biome_kind(distance: f32) -> BiomeKind {
+    let (current, next, mix) = biome_transition(distance);
+    if mix >= 0.5 { next.kind } else { current.kind }
+}
+
 fn blend_biome(a: Biome, b: Biome, t: f32) -> BiomeVisual {
     BiomeVisual {
+        kind: if t >= 0.5 { b.kind } else { a.kind },
         ground: blend(a.ground, b.ground, t),
         ground_dark: blend(a.ground_dark, b.ground_dark, t),
         far: blend(a.far, b.far, t),
         near: blend(a.near, b.near, t),
+        accent: blend(a.accent, b.accent, t),
         far_freq: mix_f32(a.far_freq, b.far_freq, t),
         far_base: mix_f32(a.far_base, b.far_base, t),
         far_amp: mix_f32(a.far_amp, b.far_amp, t),
@@ -1105,6 +1159,7 @@ fn draw_terrain(
         0.28,
     );
     let near = biome_lit(biome.near, sky.palette.ground_dark);
+    let accent = biome_lit(biome.accent, sky.palette.horizon);
 
     // Far ridge: washed out toward horizon (atmospheric perspective)
     draw_terrain_layer(
@@ -1112,7 +1167,10 @@ fn draw_terrain(
         cols,
         horizon,
         TerrainLayer {
+            kind: biome.kind,
             color: far,
+            accent,
+            depth: TerrainDepth::Far,
             scroll: phase * 0.15 * TERRAIN_FAR_SCROLL_FREQ,
             freq: biome.far_freq,
             base: biome.far_base,
@@ -1127,7 +1185,10 @@ fn draw_terrain(
         cols,
         horizon,
         TerrainLayer {
+            kind: biome.kind,
             color: near,
+            accent,
+            depth: TerrainDepth::Near,
             scroll: phase * 0.4 * TERRAIN_NEAR_SCROLL_FREQ,
             freq: biome.near_freq,
             base: biome.near_base,
@@ -1207,7 +1268,117 @@ fn draw_terrain_layer(
                 }
             };
         }
+        draw_terrain_texture(grid, cols, horizon, layer, x, height_int);
     }
+}
+
+fn draw_terrain_texture(
+    grid: &mut [CellFmt],
+    cols: usize,
+    horizon: usize,
+    layer: TerrainLayer,
+    x: usize,
+    height: usize,
+) {
+    if height == 0 {
+        return;
+    }
+
+    let top_y = horizon.saturating_sub(height);
+    let bottom_y = horizon.saturating_sub(1);
+    let world_x = x as i32 + (layer.scroll / layer.freq.max(0.001)).round() as i32;
+    let texture_fg = blend(layer.accent, layer.color, 0.25);
+    let shadow_fg = blend(layer.color, rgb(28, 28, 26), 0.35);
+
+    match layer.kind {
+        BiomeKind::Meadow => {
+            if layer.depth == TerrainDepth::Near && world_x.rem_euclid(9) == 0 {
+                put_terrain_texture(grid, cols, x, bottom_y, '\'', texture_fg);
+            }
+            if layer.depth == TerrainDepth::Near && world_x.rem_euclid(23) == 0 {
+                put_terrain_texture(grid, cols, x, top_y.max(1), '.', rgb(235, 215, 95));
+            }
+        }
+        BiomeKind::Forest => {
+            if world_x.rem_euclid(if layer.depth == TerrainDepth::Far {
+                14
+            } else {
+                10
+            }) == 0
+            {
+                put_terrain_texture(grid, cols, x, top_y, '^', texture_fg);
+                if top_y < bottom_y {
+                    put_terrain_texture(grid, cols, x, top_y + 1, '|', shadow_fg);
+                }
+            }
+        }
+        BiomeKind::Mountains => {
+            if world_x.rem_euclid(7) == 0 {
+                put_terrain_texture(grid, cols, x, top_y, '^', rgb(230, 238, 238));
+            } else if world_x.rem_euclid(11) == 0 && top_y < bottom_y {
+                let ch = if world_x.rem_euclid(2) == 0 {
+                    '/'
+                } else {
+                    '\\'
+                };
+                put_terrain_texture(grid, cols, x, top_y + 1, ch, shadow_fg);
+            }
+        }
+        BiomeKind::Desert => {
+            for y in top_y..=bottom_y {
+                if (world_x + y as i32 * 5).rem_euclid(13) == 0 {
+                    put_terrain_texture(grid, cols, x, y, '-', texture_fg);
+                }
+            }
+        }
+        BiomeKind::Canyon => {
+            for y in top_y..=bottom_y {
+                if (y as i32 + world_x.div_euclid(5)).rem_euclid(3) == 0 {
+                    put_terrain_texture(grid, cols, x, y, '─', shadow_fg);
+                }
+            }
+        }
+        BiomeKind::Tundra => {
+            if world_x.rem_euclid(6) == 0 {
+                put_terrain_texture(grid, cols, x, top_y, '.', rgb(238, 248, 248));
+            }
+            if layer.depth == TerrainDepth::Near && top_y < bottom_y && world_x.rem_euclid(19) == 0
+            {
+                put_terrain_texture(grid, cols, x, bottom_y, '_', texture_fg);
+            }
+        }
+        BiomeKind::City => {
+            if layer.depth == TerrainDepth::Near {
+                for y in top_y..=bottom_y {
+                    if (world_x + y as i32 * 3).rem_euclid(8) == 0 {
+                        put_terrain_texture(grid, cols, x, y, '▪', texture_fg);
+                    }
+                }
+            } else if world_x.rem_euclid(10) == 0 {
+                put_terrain_texture(grid, cols, x, top_y, '▌', shadow_fg);
+            }
+        }
+        BiomeKind::Coast => {
+            if world_x.rem_euclid(5) == 0 {
+                put_terrain_texture(grid, cols, x, top_y, '~', texture_fg);
+            }
+            if layer.depth == TerrainDepth::Near && world_x.rem_euclid(17) == 0 {
+                put_terrain_texture(grid, cols, x, bottom_y, '~', rgb(188, 220, 210));
+            }
+        }
+    }
+}
+
+fn put_terrain_texture(grid: &mut [CellFmt], cols: usize, x: usize, y: usize, ch: char, fg: Color) {
+    if cols == 0 || x >= cols || y >= grid.len() / cols {
+        return;
+    }
+    let i = y * cols + x;
+    grid[i] = CellFmt {
+        ch,
+        fg,
+        bg: grid[i].bg,
+    };
 }
 
 fn draw_biome_details(
@@ -1287,6 +1458,10 @@ fn draw_biome_detail_layer(grid: &mut [CellFmt], cols: usize, layer: BiomeDetail
             }
         }
         BiomeKind::Desert => {
+            let tumbleweed_fg = blend(rgb(188, 132, 62), layer.sky.palette.ground, 0.18);
+            draw_tumbleweeds(grid, cols, layer, tumbleweed_fg);
+
+            let cactus_fg = blend(rgb(42, 156, 68), layer.sky.palette.ground_dark, 0.18);
             for x in 0..cols {
                 let Some(slot) = detail_slot_for_kind(x, layer.phase, layer.kind, 15, cols) else {
                     continue;
@@ -1294,7 +1469,7 @@ fn draw_biome_detail_layer(grid: &mut [CellFmt], cols: usize, layer: BiomeDetail
                 let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, slot, 42, 3) else {
                     continue;
                 };
-                draw_cactus(grid, cols, x as i32, base_y, fg);
+                draw_cactus(grid, cols, x as i32, base_y, cactus_fg);
             }
         }
         BiomeKind::Canyon => {
@@ -1507,6 +1682,43 @@ fn draw_cactus(grid: &mut [CellFmt], cols: usize, x: i32, base_y: i32, fg: Color
     put_detail(grid, cols, x, base_y, '│', fg);
 }
 
+fn draw_tumbleweeds(grid: &mut [CellFmt], cols: usize, layer: BiomeDetailLayer, fg: Color) {
+    if dominant_biome_kind(layer.phase) != BiomeKind::Desert {
+        return;
+    }
+
+    let cycle = cols as f32 + 34.0;
+    let count = (cols / 38).max(3) + 1;
+    for i in 0..count {
+        let seed = detail_hash(i as i32, 44);
+        let offset = (seed % (cycle as u32 * 10)) as f32 / 10.0;
+        let x = cols as f32 + 3.0 - (layer.sky.elapsed * 2.4 + offset).rem_euclid(cycle);
+        let x = x.round() as i32;
+        if x < -2 || x > cols as i32 + 2 {
+            continue;
+        }
+
+        let lane_slot = i as i32 + (seed % 97) as i32;
+        let Some(base_y) = foreground_base_y(layer.rows, layer.horizon, lane_slot, 45, 1) else {
+            continue;
+        };
+        let frame = ((layer.sky.elapsed * 3.0 + offset * 0.13) as u32) % 4;
+        draw_tumbleweed(grid, cols, x, base_y, fg, frame);
+    }
+}
+
+fn draw_tumbleweed(grid: &mut [CellFmt], cols: usize, x: i32, base_y: i32, fg: Color, frame: u32) {
+    let chars = match frame {
+        0 => ['-', 'o', '-'],
+        1 => ['\\', '@', '/'],
+        2 => ['_', 'O', '_'],
+        _ => ['/', '@', '\\'],
+    };
+    for (dx, ch) in [(-1, chars[0]), (0, chars[1]), (1, chars[2])] {
+        put_detail(grid, cols, x + dx, base_y, ch, fg);
+    }
+}
+
 fn draw_building(grid: &mut [CellFmt], cols: usize, spec: BuildingSpec) {
     for dx in 0..spec.width {
         for dy in 0..spec.height {
@@ -1573,26 +1785,77 @@ fn draw_stars(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState) 
     }
 }
 
-fn draw_rain(grid: &mut [CellFmt], cols: usize, _rows: usize, horizon: usize, sky: SkyState) {
-    if sky.rain <= 0.05 {
+fn draw_precipitation(
+    grid: &mut [CellFmt],
+    cols: usize,
+    horizon: usize,
+    sky: SkyState,
+    weather: WeatherState,
+) {
+    if weather.intensity <= 0.05 {
         return;
     }
 
-    let offset = (sky.phase_time * 12.0) as usize;
-    let fg = blend(rgb(120, 150, 180), rgb(190, 210, 230), sky.rain);
-    for y in 1..horizon {
-        for x in (0..cols).step_by(4) {
-            let px = (x + ((y * 3 + offset) % 4)) % cols;
-            if !(px + y + offset).is_multiple_of(3) {
-                continue;
-            }
-            let i = y * cols + px;
-            grid[i] = CellFmt {
-                ch: '/',
-                fg,
-                bg: grid[i].bg,
-            };
+    match weather.kind {
+        PrecipitationKind::Rain => draw_rain(grid, cols, horizon, sky, weather.intensity),
+        PrecipitationKind::Snow => draw_snow(grid, cols, horizon, sky, weather.intensity),
+    }
+}
+
+fn draw_rain(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState, intensity: f32) {
+    if cols == 0 || intensity <= 0.05 {
+        return;
+    }
+
+    let cycle = horizon as f32 + 4.0;
+    let fg = blend(rgb(120, 150, 180), rgb(190, 210, 230), intensity);
+    let drops = ((cols as f32 / 2.8) * intensity.max(0.35)) as usize;
+    for drop in 0..drops.max(18) {
+        let seed = detail_hash(drop as i32, 0x0A1D_2026);
+        let x_seed = (seed % cols.max(1) as u32) as i32;
+        let offset = (detail_hash(drop as i32, 0x51A7_2026) % (cycle as u32 * 10)) as f32 / 10.0;
+        let y = (sky.elapsed * 5.2 + offset).rem_euclid(cycle) - 2.0;
+        let y = y.round() as i32;
+        if y < 1 || y >= horizon as i32 {
+            continue;
         }
+
+        let x = (x_seed + y.div_euclid(3)).rem_euclid(cols as i32) as usize;
+        let i = y as usize * cols + x;
+        grid[i] = CellFmt {
+            ch: '/',
+            fg,
+            bg: grid[i].bg,
+        };
+    }
+}
+
+fn draw_snow(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState, intensity: f32) {
+    if cols == 0 || intensity <= 0.05 {
+        return;
+    }
+
+    let cycle = horizon as f32 + 3.0;
+    let fg = blend(rgb(205, 225, 235), rgb(250, 250, 255), intensity);
+    let flakes = ((cols as f32 / 3.6) * intensity.max(0.45)) as usize;
+    for flake in 0..flakes.max(14) {
+        let seed = detail_hash(flake as i32, 0x5A10_2026);
+        let x_seed = (seed % cols.max(1) as u32) as i32;
+        let offset = (detail_hash(flake as i32, 0xF1A7_2026) % (cycle as u32 * 10)) as f32 / 10.0;
+        let y_float = (sky.elapsed * 1.45 + offset).rem_euclid(cycle) - 2.0;
+        let y = y_float.round() as i32;
+        if y < 1 || y >= horizon as i32 {
+            continue;
+        }
+
+        let drift = ((sky.elapsed * 0.8 + flake as f32 * 0.7 + y_float * 0.4).sin() * 2.0).round();
+        let x = (x_seed + drift as i32).rem_euclid(cols as i32) as usize;
+        let i = y as usize * cols + x;
+        grid[i] = CellFmt {
+            ch: if seed.is_multiple_of(5) { '*' } else { '.' },
+            fg,
+            bg: grid[i].bg,
+        };
     }
 }
 
@@ -1935,8 +2198,7 @@ mod tests {
     #[test]
     fn biome_transition_takes_half_day_cycle_at_full_speed() {
         let (start_current, start_next, start_mix) = biome_transition(0.0);
-        let (half_current, half_next, half_mix) =
-            biome_transition(BIOME_TRANSITION_DISTANCE * 0.5);
+        let (half_current, half_next, half_mix) = biome_transition(BIOME_TRANSITION_DISTANCE * 0.5);
         let (blend_start_current, blend_start_next, blend_start_mix) =
             biome_transition(BIOME_TRANSITION_DISTANCE * (1.0 - BIOME_BLEND_FRACTION));
         let (blend_mid_current, blend_mid_next, blend_mid_mix) =
@@ -1958,6 +2220,75 @@ mod tests {
         assert_eq!(next_current.kind, BiomeKind::Forest);
         assert_eq!(next_next.kind, BiomeKind::Mountains);
         assert_eq!(next_mix, 0.0);
+    }
+
+    #[test]
+    fn tundra_weather_uses_snow_instead_of_rain() {
+        let rain_time = DAY_CYCLE_SECS * 0.43;
+        let meadow = weather_state(0.0, rain_time);
+        let tundra = weather_state(BIOME_TRANSITION_DISTANCE * 5.0, rain_time);
+
+        assert_eq!(meadow.kind, PrecipitationKind::Rain);
+        assert!(meadow.rain_audio_intensity() > 0.9);
+        assert_eq!(tundra.kind, PrecipitationKind::Snow);
+        assert_eq!(tundra.rain_audio_intensity(), 0.0);
+    }
+
+    #[test]
+    fn terrain_layers_draw_biome_specific_texture() {
+        let cols = 100;
+        let rows = 40;
+        let horizon = 20;
+        let sky = sky_state(0.0);
+
+        for (idx, biome) in BIOMES.iter().enumerate() {
+            let distance = BIOME_TRANSITION_DISTANCE * idx as f32;
+            let visual = biome_visual(distance);
+            let mut grid = vec![BLANK; cols * rows];
+            let expected_chars: &[char] = match biome.kind {
+                BiomeKind::Meadow => &['\'', '.'],
+                BiomeKind::Forest => &['^', '|'],
+                BiomeKind::Mountains => &['^', '/', '\\'],
+                BiomeKind::Desert => &['-'],
+                BiomeKind::Canyon => &['─'],
+                BiomeKind::Tundra => &['.', '_'],
+                BiomeKind::City => &['▪', '▌'],
+                BiomeKind::Coast => &['~'],
+            };
+
+            assert_eq!(visual.kind, biome.kind);
+            draw_terrain(&mut grid, cols, horizon, sky, visual, distance, true);
+
+            assert!(
+                grid.iter().any(|cell| expected_chars.contains(&cell.ch)),
+                "{:?} terrain drew no biome texture",
+                biome.kind
+            );
+        }
+    }
+
+    #[test]
+    fn cactus_overdraws_overlapping_tumbleweed() {
+        let cols = 20;
+        let rows = 10;
+        let mut grid = vec![BLANK; cols * rows];
+        let cactus_fg = rgb(42, 156, 68);
+        let base_y = 6;
+
+        draw_tumbleweed(&mut grid, cols, 8, base_y - 2, rgb(188, 132, 62), 1);
+        draw_cactus(&mut grid, cols, 8, base_y, cactus_fg);
+
+        for (x, y, ch) in [
+            (8, base_y - 2, '│'),
+            (7, base_y - 2, '┤'),
+            (9, base_y - 1, '├'),
+            (8, base_y - 1, '│'),
+            (8, base_y, '│'),
+        ] {
+            let cell = grid[y as usize * cols + x as usize];
+            assert_eq!(cell.ch, ch);
+            assert_eq!(cell.fg, cactus_fg);
+        }
     }
 
     #[test]

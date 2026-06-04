@@ -277,6 +277,13 @@ fn run(
         if let Some(a) = audio.as_mut() {
             a.tick_chugga(game.moving_recently());
             a.set_engine_pan(game.engine_pan());
+            a.tick_rain(
+                renderer::weather_state(
+                    game.distance_traveled,
+                    game.started_at.elapsed().as_secs_f32(),
+                )
+                .rain_audio_intensity(),
+            );
             if cars_added > 0 {
                 a.another_wheel();
             }

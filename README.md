@@ -78,10 +78,10 @@ Minimal Linux installs may also need the ALSA runtime libraries for audio.
 
 ## Audio
 
-All three sounds are vendored under `assets/` and embedded into the binary
-at compile time. Playback uses [`rodio`](https://crates.io/crates/rodio),
-so the game runs on macOS, Linux, and Windows with no audio toolchain
-required at runtime.
+The chugga loop, horn, and "another wheel" voice are vendored under `assets/`
+and embedded into the binary at compile time. Rain ambience is generated at
+runtime. Playback uses [`rodio`](https://crates.io/crates/rodio), so the game
+runs on macOS, Linux, and Windows with no audio toolchain required at runtime.
 
 ## Attribution
 
