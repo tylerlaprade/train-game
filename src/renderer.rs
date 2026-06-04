@@ -1923,8 +1923,8 @@ fn draw_snow(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState, i
 
     let cycle = horizon as f32 + 3.0;
     let fg = blend(rgb(205, 225, 235), rgb(250, 250, 255), intensity);
-    let flakes = ((cols as f32 / 3.6) * intensity.max(0.45)) as usize;
-    for flake in 0..flakes.max(14) {
+    let flakes = ((cols as f32 / 1.6) * intensity.max(0.70)) as usize;
+    for flake in 0..flakes.max(36) {
         let seed = detail_hash(flake as i32, 0x5A10_2026);
         let x_seed = (seed % cols.max(1) as u32) as i32;
         let offset = (detail_hash(flake as i32, 0xF1A7_2026) % (cycle as u32 * 10)) as f32 / 10.0;
@@ -2360,6 +2360,27 @@ mod tests {
 
         assert!(slash_count >= 18);
         assert!(!grid.iter().any(|cell| cell.ch == '*' || cell.ch == '.'));
+    }
+
+    #[test]
+    fn snow_uses_dense_particle_field() {
+        let cols = 80;
+        let horizon = 24;
+        let mut grid = vec![BLANK; cols * horizon];
+
+        draw_snow(
+            &mut grid,
+            cols,
+            horizon,
+            sky_state_with_weather(0.0, 1.0),
+            1.0,
+        );
+
+        let snow_count = grid
+            .iter()
+            .filter(|cell| cell.ch == '*' || cell.ch == '.')
+            .count();
+        assert!(snow_count >= 30);
     }
 
     #[test]
