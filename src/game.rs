@@ -10,8 +10,9 @@ pub const SMOKE_MAX_AGE: f32 = 3.0;
 pub const SMOKE_SPAWN_INTERVAL: f32 = 0.08;
 pub const TRAIN_SPEED_CELLS_PER_SEC: f32 = 32.0;
 pub const DAY_CYCLE_SECS: f32 = 84.0;
-pub const RAIN_PHASE: f32 = 0.43;
 pub const TIME_DEBUG_SKIP_SECS: f32 = DAY_CYCLE_SECS * 0.125;
+pub const WEATHER_CYCLE_SECS: f32 = DAY_CYCLE_SECS * 1.65;
+pub const WEATHER_EVENT_PHASE: f32 = 0.43;
 pub const BIOME_TRANSITION_DISTANCE: f32 = TRAIN_SPEED_CELLS_PER_SEC * DAY_CYCLE_SECS * 0.5;
 pub const BIOME_BLEND_FRACTION: f32 = 0.25;
 pub const BIOME_BLEND_START_DISTANCE: f32 =
@@ -110,6 +111,7 @@ pub struct Game {
     pub rng: SmallRng,
     pub started_at: Instant,
     time_offset_secs: f32,
+    weather_offset_secs: f32,
     pub last_tick: Instant,
 
     pub last_move: Option<Instant>,
@@ -136,6 +138,7 @@ impl Game {
             rng: SmallRng::from_entropy(),
             started_at: now,
             time_offset_secs: 0.0,
+            weather_offset_secs: 0.0,
             last_tick: now,
             last_move: None,
             last_celebrate: None,
@@ -156,14 +159,18 @@ impl Game {
         self.started_at.elapsed().as_secs_f32() + self.time_offset_secs
     }
 
+    pub fn weather_elapsed_secs(&self) -> f32 {
+        self.started_at.elapsed().as_secs_f32() + self.weather_offset_secs
+    }
+
     pub fn advance_time_of_day(&mut self) {
         self.time_offset_secs += TIME_DEBUG_SKIP_SECS;
     }
 
     pub fn trigger_weather(&mut self) {
-        let current = self.elapsed_secs().rem_euclid(DAY_CYCLE_SECS);
-        let target = DAY_CYCLE_SECS * RAIN_PHASE;
-        self.time_offset_secs += (target - current).rem_euclid(DAY_CYCLE_SECS);
+        let current = self.weather_elapsed_secs().rem_euclid(WEATHER_CYCLE_SECS);
+        let target = WEATHER_CYCLE_SECS * WEATHER_EVENT_PHASE;
+        self.weather_offset_secs += (target - current).rem_euclid(WEATHER_CYCLE_SECS);
     }
 
     /// Distance the head must travel before wrapping back to 0. Picked so

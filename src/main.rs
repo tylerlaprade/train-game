@@ -278,7 +278,7 @@ fn run(
             a.tick_chugga(game.moving_recently());
             a.set_engine_pan(game.engine_pan());
             a.tick_rain(
-                renderer::weather_state(game.distance_traveled, game.elapsed_secs())
+                renderer::weather_state(game.distance_traveled, game.weather_elapsed_secs())
                     .rain_audio_intensity(),
             );
             if cars_added > 0 {
@@ -364,8 +364,8 @@ mod tests {
         handle_key,
     };
     use crate::game::{
-        BIOME_BLEND_START_DISTANCE, BIOME_DEBUG_SKIP_MARGIN, DAY_CYCLE_SECS, Game, RAIN_PHASE,
-        TIME_DEBUG_SKIP_SECS,
+        BIOME_BLEND_START_DISTANCE, BIOME_DEBUG_SKIP_MARGIN, DAY_CYCLE_SECS, Game,
+        TIME_DEBUG_SKIP_SECS, WEATHER_CYCLE_SECS, WEATHER_EVENT_PHASE,
     };
     use crossterm::Command;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -445,11 +445,12 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_r_jumps_to_wet_time_of_day() {
+    fn ctrl_r_jumps_to_active_weather_without_changing_time_of_day() {
         let mut game = Game::new(200, 40);
         let mut audio = None;
         let mut input = InputState::default();
         let mut unlock = UnlockState::default();
+        let day_before = game.elapsed_secs().rem_euclid(DAY_CYCLE_SECS);
 
         handle_key(
             KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
@@ -460,8 +461,10 @@ mod tests {
             false,
         );
 
-        let phase_time = game.elapsed_secs().rem_euclid(DAY_CYCLE_SECS);
-        assert!((phase_time - DAY_CYCLE_SECS * RAIN_PHASE).abs() < 0.05);
+        let day_after = game.elapsed_secs().rem_euclid(DAY_CYCLE_SECS);
+        let weather_time = game.weather_elapsed_secs().rem_euclid(WEATHER_CYCLE_SECS);
+        assert!((day_after - day_before).abs() < 0.05);
+        assert!((weather_time - WEATHER_CYCLE_SECS * WEATHER_EVENT_PHASE).abs() < 0.05);
     }
 
     #[test]

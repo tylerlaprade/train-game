@@ -7,7 +7,7 @@ use crossterm::terminal::{Clear, ClearType};
 
 use crate::game::{
     BIOME_BLEND_FRACTION, BIOME_BLEND_START_DISTANCE, BIOME_TRANSITION_DISTANCE, CarColor, CarKind,
-    DAY_CYCLE_SECS, Game, SEG_HEIGHT,
+    DAY_CYCLE_SECS, Game, SEG_HEIGHT, WEATHER_CYCLE_SECS, WEATHER_EVENT_PHASE,
 };
 
 pub struct Sprite {
@@ -642,7 +642,6 @@ struct SkyState {
     palette: SkyPalette,
     elapsed: f32,
     phase_time: f32,
-    rain: f32,
     stars: f32,
 }
 
@@ -740,8 +739,8 @@ impl Renderer {
 
         let train_top = game.train_top();
         let horizon = train_top + SEG_HEIGHT - 2;
-        let sky = sky_state(game.elapsed_secs());
-        let weather = weather_state_from_sky(game.distance_traveled, sky);
+        let weather = weather_state(game.distance_traveled, game.weather_elapsed_secs());
+        let sky = sky_state_with_weather(game.elapsed_secs(), weather.intensity);
         let biome = biome_visual(game.distance_traveled);
 
         draw_sky(&mut self.grid, cols, rows, horizon, sky, biome);
@@ -883,7 +882,7 @@ fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
     cube_idx
 }
 
-fn sky_state(elapsed: f32) -> SkyState {
+fn sky_state_with_weather(elapsed: f32, weather_intensity: f32) -> SkyState {
     let phase_time = elapsed % SKY_CYCLE_SECS;
     let phase = phase_time / SKY_CYCLE_SECS;
 
@@ -905,7 +904,7 @@ fn sky_state(elapsed: f32) -> SkyState {
         ground: GROUND,
         ground_dark: GROUND_DARK,
     };
-    let rain = SkyPalette {
+    let overcast = SkyPalette {
         top: rgb(55, 75, 95),
         mid: rgb(80, 100, 120),
         horizon: rgb(115, 125, 130),
@@ -933,14 +932,12 @@ fn sky_state(elapsed: f32) -> SkyState {
         ground_dark: rgb(12, 28, 24),
     };
 
-    let palette = if phase < 0.16 {
+    let base_palette = if phase < 0.16 {
         blend_palette(dawn, day, smoothstep(phase / 0.16))
-    } else if phase < 0.34 {
-        day
     } else if phase < 0.47 {
-        blend_palette(day, rain, smoothstep((phase - 0.34) / 0.13))
+        day
     } else if phase < 0.58 {
-        blend_palette(rain, sunset, smoothstep((phase - 0.47) / 0.11))
+        blend_palette(day, sunset, smoothstep((phase - 0.47) / 0.11))
     } else if phase < 0.72 {
         blend_palette(sunset, night, smoothstep((phase - 0.58) / 0.14))
     } else if phase < 0.93 {
@@ -948,24 +945,22 @@ fn sky_state(elapsed: f32) -> SkyState {
     } else {
         blend_palette(night, dawn, smoothstep((phase - 0.93) / 0.07))
     };
+    let palette = blend_palette(base_palette, overcast, smoothstep(weather_intensity * 0.85));
 
     SkyState {
         palette,
         elapsed,
         phase_time,
-        rain: bell(phase, 0.43, 0.10),
-        stars: smoothstep((phase - 0.67) / 0.08) * (1.0 - smoothstep((phase - 0.94) / 0.05)),
+        stars: smoothstep((phase - 0.67) / 0.08)
+            * (1.0 - smoothstep((phase - 0.94) / 0.05))
+            * (1.0 - weather_intensity),
     }
 }
 
-pub fn weather_state(distance: f32, elapsed: f32) -> WeatherState {
-    weather_state_from_sky(distance, sky_state(elapsed))
-}
-
-fn weather_state_from_sky(distance: f32, sky: SkyState) -> WeatherState {
+pub fn weather_state(distance: f32, weather_elapsed: f32) -> WeatherState {
     let (current, next, mix) = biome_transition(distance);
     WeatherState {
-        intensity: sky.rain,
+        intensity: weather_intensity(weather_elapsed),
         kind: if current.kind == BiomeKind::Tundra || (next.kind == BiomeKind::Tundra && mix > 0.0)
         {
             PrecipitationKind::Snow
@@ -973,6 +968,11 @@ fn weather_state_from_sky(distance: f32, sky: SkyState) -> WeatherState {
             PrecipitationKind::Rain
         },
     }
+}
+
+fn weather_intensity(elapsed: f32) -> f32 {
+    let phase = elapsed.rem_euclid(WEATHER_CYCLE_SECS) / WEATHER_CYCLE_SECS;
+    bell(phase, WEATHER_EVENT_PHASE, 0.12)
 }
 
 fn blend_palette(a: SkyPalette, b: SkyPalette, t: f32) -> SkyPalette {
@@ -2311,16 +2311,16 @@ mod tests {
 
     #[test]
     fn tundra_weather_uses_snow_instead_of_rain() {
-        let rain_time = DAY_CYCLE_SECS * 0.43;
-        let meadow = weather_state(0.0, rain_time);
+        let weather_time = WEATHER_CYCLE_SECS * WEATHER_EVENT_PHASE;
+        let meadow = weather_state(0.0, weather_time);
         let tundra_blend = weather_state(
             BIOME_TRANSITION_DISTANCE * 4.0 + BIOME_BLEND_START_DISTANCE + 1.0,
-            rain_time,
+            weather_time,
         );
-        let tundra = weather_state(BIOME_TRANSITION_DISTANCE * 5.0, rain_time);
+        let tundra = weather_state(BIOME_TRANSITION_DISTANCE * 5.0, weather_time);
         let leaving_tundra = weather_state(
             BIOME_TRANSITION_DISTANCE * 5.0 + BIOME_BLEND_START_DISTANCE + 1.0,
-            rain_time,
+            weather_time,
         );
 
         assert_eq!(meadow.kind, PrecipitationKind::Rain);
@@ -2332,12 +2332,29 @@ mod tests {
     }
 
     #[test]
+    fn weather_tints_independent_time_of_day_palette() {
+        let sunset_time = DAY_CYCLE_SECS * 0.55;
+        let clear = sky_state_with_weather(sunset_time, 0.0);
+        let wet = sky_state_with_weather(sunset_time, 1.0);
+
+        assert_ne!(clear.palette.top, wet.palette.top);
+        assert_ne!(clear.palette.horizon, wet.palette.horizon);
+        assert!(wet.stars <= clear.stars);
+    }
+
+    #[test]
     fn rain_uses_slash_drop_field() {
         let cols = 80;
         let horizon = 24;
         let mut grid = vec![BLANK; cols * horizon];
 
-        draw_rain(&mut grid, cols, horizon, sky_state(0.0), 1.0);
+        draw_rain(
+            &mut grid,
+            cols,
+            horizon,
+            sky_state_with_weather(0.0, 0.0),
+            1.0,
+        );
 
         let slash_count = grid.iter().filter(|cell| cell.ch == '/').count();
 
@@ -2516,7 +2533,14 @@ mod tests {
 
             assert_eq!(current.kind, biome.kind);
 
-            draw_biome_details(&mut grid, cols, rows, horizon, sky_state(0.0), phase);
+            draw_biome_details(
+                &mut grid,
+                cols,
+                rows,
+                horizon,
+                sky_state_with_weather(0.0, 0.0),
+                phase,
+            );
 
             for r in 0..=horizon + 1 {
                 for c in 0..cols {
