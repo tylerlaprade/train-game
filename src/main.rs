@@ -276,6 +276,7 @@ fn run(
         let cars_added = game.tick();
         if let Some(a) = audio.as_mut() {
             a.tick_chugga(game.moving_recently());
+            a.set_engine_pan(game.engine_pan());
             if cars_added > 0 {
                 a.another_wheel();
             }

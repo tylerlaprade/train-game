@@ -191,6 +191,28 @@ impl Game {
         self.train_top() as i32
     }
 
+    /// On-screen horizontal position of the engine as a stereo pan value in
+    /// [-1.0, 1.0] (-1 = hard left, 0 = center, +1 = hard right). Drives the
+    /// spatial audio so the chug and whistle track the engine across the
+    /// screen. The train is drawn at three wrap offsets; we follow whichever
+    /// engine copy is nearest the screen, so the sound re-enters from the left
+    /// once the engine slides off the right edge.
+    pub fn engine_pan(&self) -> f32 {
+        let cols = self.screen_cols.max(1) as f32;
+        let half_engine = (crate::renderer::ENGINE.width as f32 - 1.0) / 2.0;
+        let center = self.head_x - half_engine;
+        let cycle = self.cycle().max(1) as f32;
+        let screen_center = cols / 2.0;
+        let mut nearest = center;
+        for shift in [-cycle, 0.0, cycle] {
+            let c = center + shift;
+            if (c - screen_center).abs() < (nearest - screen_center).abs() {
+                nearest = c;
+            }
+        }
+        ((nearest / cols) * 2.0 - 1.0).clamp(-1.0, 1.0)
+    }
+
     /// Returns the number of new-car *announcements* this tick (0 or 1). A
     /// car can be added on a wrap event but the announcement is deferred
     /// until the new car is actually visible on screen (see `unannounced_car`).
@@ -383,6 +405,30 @@ mod tests {
             game.screen_cols as i32 - 1 + half_caboose,
             "caboose should be half off the right edge at the wrap moment",
         );
+    }
+
+    #[test]
+    fn engine_pan_tracks_engine_left_to_right_then_wraps_back() {
+        let mut game = Game::new(200, 40);
+        let half_engine = (crate::renderer::ENGINE.width as f32 - 1.0) / 2.0;
+
+        // Engine centered on screen -> centered pan.
+        game.head_x = 100.0 + half_engine;
+        assert!(game.engine_pan().abs() < 0.01);
+
+        // Engine against the left edge -> hard left (negative).
+        game.head_x = half_engine;
+        assert!(game.engine_pan() < -0.9);
+
+        // Engine against the right edge -> hard right (positive).
+        game.head_x = 200.0 + half_engine;
+        assert!(game.engine_pan() > 0.9);
+
+        // Just before the wrap, the nearest engine copy is the one re-entering
+        // from the left, so the pan snaps back to the left rather than staying
+        // pinned to the right.
+        game.head_x = (game.cycle() - 1) as f32;
+        assert!(game.engine_pan() < -0.9);
     }
 
     #[test]
