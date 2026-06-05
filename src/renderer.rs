@@ -680,6 +680,7 @@ pub struct Renderer {
     cols: usize,
     rows: usize,
     truecolor: bool,
+    smooth_block_glyphs: bool,
 }
 
 impl Default for Renderer {
@@ -696,11 +697,12 @@ impl Renderer {
             cols: 0,
             rows: 0,
             truecolor: truecolor_supported(),
+            smooth_block_glyphs: smooth_block_glyphs_supported(),
         }
     }
 
-    /// Terminals without 24-bit color (e.g. Apple's Terminal.app) garble
-    /// `Color::Rgb` sequences, so fall back to the nearest xterm-256 entry.
+    /// Terminals that do not advertise 24-bit color may garble `Color::Rgb`
+    /// sequences, so fall back to the nearest xterm-256 entry.
     fn adapt(&self, c: Color) -> Color {
         match c {
             Color::Rgb { r, g, b } if !self.truecolor => Color::AnsiValue(rgb_to_ansi256(r, g, b)),
@@ -753,7 +755,7 @@ impl Renderer {
             sky,
             biome,
             game.distance_traveled,
-            self.truecolor,
+            self.smooth_block_glyphs,
         );
         draw_tracks(&mut self.grid, cols, rows, horizon, game.distance_traveled);
         draw_biome_details(
@@ -833,13 +835,21 @@ fn rgb(r: u8, g: u8, b: u8) -> Color {
     Color::Rgb { r, g, b }
 }
 
-/// True when the terminal advertises 24-bit color via `COLORTERM`. Terminals
-/// that don't (notably Apple's Terminal.app) only handle the xterm-256 palette.
+/// True when the terminal advertises 24-bit color via `COLORTERM`.
 fn truecolor_supported() -> bool {
-    matches!(
-        std::env::var("COLORTERM").as_deref(),
-        Ok("truecolor") | Ok("24bit")
-    )
+    truecolor_supported_for(std::env::var("COLORTERM").ok().as_deref())
+}
+
+fn truecolor_supported_for(colorterm: Option<&str>) -> bool {
+    matches!(colorterm, Some("truecolor") | Some("24bit"))
+}
+
+fn smooth_block_glyphs_supported() -> bool {
+    smooth_block_glyphs_supported_for(std::env::var("TERM_PROGRAM").ok().as_deref())
+}
+
+fn smooth_block_glyphs_supported_for(term_program: Option<&str>) -> bool {
+    !matches!(term_program, Some("Apple_Terminal"))
 }
 
 /// Map a 24-bit color to the closest xterm-256 palette index, choosing between
@@ -1148,7 +1158,7 @@ fn draw_terrain(
     sky: SkyState,
     biome: BiomeVisual,
     phase: f32,
-    truecolor: bool,
+    smooth_block_glyphs: bool,
 ) {
     if horizon < 3 {
         return;
@@ -1178,7 +1188,7 @@ fn draw_terrain(
             amp: biome.far_amp,
             detail_amp: biome.far_detail,
         },
-        truecolor,
+        smooth_block_glyphs,
     );
     // Near hills: slightly darker than foreground grass, not pitch-black
     draw_terrain_layer(
@@ -1197,7 +1207,7 @@ fn draw_terrain(
             amp: biome.near_amp,
             detail_amp: biome.near_detail,
         },
-        truecolor,
+        smooth_block_glyphs,
     );
 }
 
@@ -1206,7 +1216,7 @@ fn draw_terrain_layer(
     cols: usize,
     horizon: usize,
     layer: TerrainLayer,
-    truecolor: bool,
+    smooth_block_glyphs: bool,
 ) {
     const STEPS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let max_height = horizon.saturating_sub(1);
@@ -1230,9 +1240,9 @@ fn draw_terrain_layer(
                 bg: layer.color,
             };
         }
-        if !truecolor {
-            // Terminal.app renders block-element glyphs with seams/hairlines, so
-            // snap the silhouette to whole cells: round the fractional top up or down.
+        if !smooth_block_glyphs {
+            // Some terminal/font combinations render fractional blocks with width
+            // or seam artifacts, so snap the silhouette to whole cells.
             if frac >= 0.5 && height_int < max_height {
                 let y = horizon - 1 - height_int;
                 let i = y * cols + x;
@@ -2587,6 +2597,22 @@ mod tests {
                 biome.kind
             );
         }
+    }
+
+    #[test]
+    fn truecolor_support_uses_colorterm_advertisement() {
+        assert!(truecolor_supported_for(Some("truecolor")));
+        assert!(truecolor_supported_for(Some("24bit")));
+        assert!(!truecolor_supported_for(None));
+        assert!(!truecolor_supported_for(Some("256color")));
+    }
+
+    #[test]
+    fn apple_terminal_opts_out_of_smooth_block_glyphs() {
+        assert!(!smooth_block_glyphs_supported_for(Some("Apple_Terminal")));
+        assert!(smooth_block_glyphs_supported_for(Some("iTerm.app")));
+        assert!(smooth_block_glyphs_supported_for(Some("ghostty")));
+        assert!(smooth_block_glyphs_supported_for(None));
     }
 
     #[test]
