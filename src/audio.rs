@@ -39,7 +39,8 @@ pub struct Audio {
 
 impl Audio {
     pub fn new() -> Option<Self> {
-        let sink = DeviceSinkBuilder::open_default_sink().ok()?;
+        let mut sink = DeviceSinkBuilder::open_default_sink().ok()?;
+        sink.log_on_drop(false);
         let pan = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
 
         let chugga = Player::connect_new(sink.mixer());
