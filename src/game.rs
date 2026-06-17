@@ -263,30 +263,13 @@ impl Game {
         }
 
         let cycle = self.cycle() as f32;
-        let prev_head = self.head_x;
-        let unwrapped = prev_head + self.velocity * dt;
-        self.head_x = if cycle > 0.0 {
-            unwrapped.rem_euclid(cycle)
-        } else {
-            unwrapped
-        };
+        self.head_x += self.velocity * dt;
+        if cycle > 0.0 {
+            self.head_x = self.head_x.rem_euclid(cycle);
+        }
         self.distance_traveled += self.velocity * dt;
 
-        // A new car is earned by traveling one full `cycle` forward — a whole
-        // round trip — measured from `wheel_anchor`, the furthest-back point
-        // since the last car. The anchor tracks the train backwards, so going
-        // in reverse never earns a wheel and never inflates the next one: from
-        // wherever the train ends up, one forward lap earns the next car.
-        // Basing this on the unwrapped `distance_traveled` (not the wrapped
-        // `head_x`) means wiggling back and forth across the wrap point no
-        // longer mints wheels without real forward progress.
-        if cycle > 0.0 {
-            self.wheel_anchor = self.wheel_anchor.min(self.distance_traveled);
-            if self.distance_traveled - self.wheel_anchor >= cycle {
-                self.add_car();
-                self.wheel_anchor = self.distance_traveled;
-            }
-        }
+        self.award_wheels(cycle);
 
         let announce = if let Some(idx) = self.unannounced_car {
             if self.car_is_on_screen(idx) {
@@ -316,6 +299,38 @@ impl Game {
         });
 
         announce
+    }
+
+    /// Grant a new car for each full `cycle` of forward travel.
+    ///
+    /// Progress is measured from `wheel_anchor`, the furthest-back point the
+    /// train has reached since the last car. The anchor tracks the train
+    /// backwards, so reversing never earns a wheel and never inflates the
+    /// next one: from wherever the train ends up, one forward lap earns the
+    /// next car. Because this works off the unwrapped `distance_traveled`
+    /// rather than the wrapped `head_x`, wiggling back and forth across the
+    /// wrap point no longer mints wheels without real forward progress.
+    fn award_wheels(&mut self, cycle: f32) {
+        if cycle <= 0.0 {
+            return;
+        }
+        self.wheel_anchor = self.wheel_anchor.min(self.distance_traveled);
+        if self.distance_traveled - self.wheel_anchor >= cycle {
+            self.add_car();
+            self.wheel_anchor = self.distance_traveled;
+        }
+    }
+
+    /// Test helper: move the train `delta` cells (signed, in world space) and
+    /// report how many cars the move earned, exercising the same wheel logic
+    /// a live tick runs.
+    #[cfg(test)]
+    fn travel(&mut self, delta: f32) -> usize {
+        let before = self.cars.len();
+        self.distance_traveled += delta;
+        let cycle = self.cycle() as f32;
+        self.award_wheels(cycle);
+        self.cars.len() - before
     }
 
     /// Is car at index `idx` at least partially within the screen at any of
@@ -531,15 +546,11 @@ mod tests {
     fn wiggling_back_and_forth_without_a_full_lap_adds_no_car() {
         let mut game = Game::new(200, 40);
         let cycle = game.cycle() as f32;
-        game.velocity = 0.0;
 
-        // Drive distance directly and let an idle tick evaluate the wheel
-        // logic. None of these moves nets a full lap forward of the
+        // Move forward and back, but never advance a full lap past the
         // furthest-back point, so no car should ever be earned.
-        for &fraction in &[0.5, -0.4, 0.4, -0.3, 0.5, -0.2] {
-            game.distance_traveled = fraction * cycle;
-            game.last_tick = Instant::now();
-            assert_eq!(game.tick(), 0);
+        for &delta in &[0.5, -0.9, 0.8, -0.7, 0.8, -0.7] {
+            assert_eq!(game.travel(delta * cycle), 0);
         }
         assert_eq!(game.cars.len(), 0);
     }
@@ -548,29 +559,23 @@ mod tests {
     fn one_forward_lap_from_far_back_adds_exactly_one_car() {
         let mut game = Game::new(200, 40);
         let cycle = game.cycle() as f32;
-        game.velocity = 0.0;
 
         // Reverse a long way: still no car, and no inflated requirement.
-        game.distance_traveled = -5.0 * cycle;
-        game.last_tick = Instant::now();
-        game.tick();
-        assert_eq!(game.cars.len(), 0, "reversing never earns a wheel");
+        assert_eq!(game.travel(-5.0 * cycle), 0, "reversing never earns a wheel");
 
-        // A single forward lap from wherever it ended up earns one car.
-        game.distance_traveled = -4.0 * cycle;
-        game.last_tick = Instant::now();
-        game.tick();
+        // A single forward lap from wherever it ended up earns one car...
         assert_eq!(
-            game.cars.len(),
+            game.travel(cycle),
             1,
             "one lap forward from the low point earns a wheel"
         );
 
-        // Half a lap more does not earn another.
-        game.distance_traveled = -3.5 * cycle;
-        game.last_tick = Instant::now();
-        game.tick();
-        assert_eq!(game.cars.len(), 1, "a partial lap earns nothing further");
+        // ...and a partial lap more does not earn another.
+        assert_eq!(
+            game.travel(0.5 * cycle),
+            0,
+            "a partial lap earns nothing further"
+        );
     }
 
     #[test]
