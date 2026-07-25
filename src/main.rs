@@ -257,17 +257,12 @@ fn run(
         }
 
         while event::poll(Duration::from_millis(0))? {
-            match event::read()? {
-                Event::Key(k) => {
-                    handle_key(k, game, audio, &mut input, &mut unlock, report_key_releases)
-                }
-                Event::Resize(c, r) => {
-                    game.resize(c, r);
-                    execute!(stdout, Clear(ClearType::All))?;
-                }
-                _ => {}
+            if let Event::Key(k) = event::read()? {
+                handle_key(k, game, audio, &mut input, &mut unlock, report_key_releases);
             }
         }
+
+        sync_terminal_size(game, stdout)?;
 
         if report_key_releases {
             input.drive(game);
@@ -275,6 +270,7 @@ fn run(
 
         let cars_added = game.tick();
         if let Some(a) = audio.as_mut() {
+            a.recover_if_stalled();
             a.tick_chugga(game.moving_recently());
             a.set_engine_pan(game.engine_pan());
             a.tick_rain(
@@ -294,6 +290,25 @@ fn run(
         }
         last_frame = Instant::now();
     }
+}
+
+/// Keep the game's idea of the terminal in step with the real one.
+///
+/// A terminal normally announces a resize — including the one a zoom in or out
+/// produces — with a `Resize` event, but that notification is easy to lose: a
+/// `SIGWINCH` delivered while the machine is asleep never reaches us, and the
+/// window can be a different size by the time the lid opens again. Reading the
+/// real size every frame costs one `ioctl` and covers both the event and
+/// everything the event misses.
+fn sync_terminal_size(game: &mut Game, stdout: &mut impl io::Write) -> io::Result<()> {
+    let Ok((cols, rows)) = size() else {
+        return Ok(());
+    };
+    if cols != game.screen_cols || rows != game.screen_rows {
+        game.resize(cols, rows);
+        execute!(stdout, Clear(ClearType::All))?;
+    }
+    Ok(())
 }
 
 fn handle_key(

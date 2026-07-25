@@ -310,15 +310,40 @@ impl Game {
     /// next car. Because this works off the unwrapped `distance_traveled`
     /// rather than the wrapped `head_x`, wiggling back and forth across the
     /// wrap point no longer mints wheels without real forward progress.
+    ///
+    /// An earned car is only spliced in once the seam it would open is off
+    /// screen (see [`Game::new_car_slot_is_off_screen`]). Distance and
+    /// `head_x` normally stay in lockstep, but anything that breaks their
+    /// phase — a terminal resize part-way through a lap, or reversing and
+    /// re-anchoring mid-screen — would otherwise let a car materialize in
+    /// plain sight. Holding the award costs at most one extra lap, once:
+    /// the anchor is reset at the moment of insertion, which re-locks the
+    /// two together for every lap after it.
     fn award_wheels(&mut self, cycle: f32) {
         if cycle <= 0.0 {
             return;
         }
         self.wheel_anchor = self.wheel_anchor.min(self.distance_traveled);
-        if self.distance_traveled - self.wheel_anchor >= cycle {
+        if self.distance_traveled - self.wheel_anchor >= cycle && self.new_car_slot_is_off_screen()
+        {
             self.add_car();
             self.wheel_anchor = self.distance_traveled;
         }
+    }
+
+    /// Is the slot the next car would occupy — directly behind the engine —
+    /// out of sight?
+    ///
+    /// New cars go in at `cars[0]`, so the slot's right edge sits one column
+    /// left of the engine's left edge, and it is off the left of the screen
+    /// exactly when the engine's tail has not finished entering yet. The
+    /// other two wrap copies never need checking: the `-cycle` copy is a full
+    /// cycle further left, and inserting a car grows `cycle` by that car's
+    /// width, which pins the `+cycle` copy of the slot past the right edge.
+    /// So the whole train behind the engine is off screen and the splice is
+    /// invisible.
+    fn new_car_slot_is_off_screen(&self) -> bool {
+        self.head_x.floor() as i32 - (crate::renderer::ENGINE.width as i32) < 0
     }
 
     /// Test helper: move the train `delta` cells (signed, in world space) and
@@ -561,7 +586,11 @@ mod tests {
         let cycle = game.cycle() as f32;
 
         // Reverse a long way: still no car, and no inflated requirement.
-        assert_eq!(game.travel(-5.0 * cycle), 0, "reversing never earns a wheel");
+        assert_eq!(
+            game.travel(-5.0 * cycle),
+            0,
+            "reversing never earns a wheel"
+        );
 
         // A single forward lap from wherever it ended up earns one car...
         assert_eq!(
@@ -576,6 +605,46 @@ mod tests {
             0,
             "a partial lap earns nothing further"
         );
+    }
+
+    #[test]
+    fn earned_car_waits_until_the_seam_behind_the_engine_is_off_screen() {
+        let mut game = Game::new(200, 40);
+
+        // A resize part-way through a lap (or a reversal) leaves the earned
+        // distance and `head_x` out of phase, so the wheel comes due while the
+        // engine is out in the middle of the screen.
+        game.head_x = 120.0;
+        game.distance_traveled = game.cycle() as f32;
+        game.award_wheels(game.cycle() as f32);
+        assert_eq!(
+            game.cars.len(),
+            0,
+            "a car must not pop into existence while the seam is visible"
+        );
+
+        // It arrives as soon as the engine is back at the left edge, tucked
+        // off screen behind it — so the voice still waits for it to slide in.
+        game.head_x = 0.0;
+        game.award_wheels(game.cycle() as f32);
+        assert_eq!(game.cars.len(), 1);
+        assert!(!game.car_is_on_screen(0));
+    }
+
+    #[test]
+    fn deferred_award_relocks_head_position_for_later_laps() {
+        let mut game = Game::new(200, 40);
+
+        game.head_x = 120.0;
+        game.distance_traveled = game.cycle() as f32;
+        game.award_wheels(game.cycle() as f32);
+        game.head_x = 4.0;
+        game.award_wheels(game.cycle() as f32);
+        assert_eq!(game.cars.len(), 1);
+
+        // From here on the anchor and `head_x` are back in step: one more lap
+        // brings the head around to the same spot and the car lands at once.
+        assert_eq!(game.travel(game.cycle() as f32), 1);
     }
 
     #[test]

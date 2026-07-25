@@ -1918,30 +1918,56 @@ fn draw_rain(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState, i
     }
 }
 
+/// Depth layers for the snowfall, as `(fall speed, drift width, brightness)`.
+/// A field this dense would read as one sheet sliding down the screen if every
+/// flake fell at the same rate, so they are split across three layers: distant
+/// flakes are slow, small and washed into the sky color, near ones are fast,
+/// bright and swing further on the wind.
+const SNOW_LAYERS: [(f32, f32, f32); 3] = [(0.85, 1.2, 0.42), (1.45, 2.2, 0.74), (2.30, 3.4, 1.00)];
+
+/// Fraction of the sky carrying a flake at full intensity. Snow is sized off
+/// the whole sky area — not just its width, as it used to be — so it fills the
+/// screen the way the rain field does instead of drifting past in ones and
+/// twos.
+const SNOW_DENSITY: f32 = 0.20;
+
+/// Floor on the density multiplier, so even the tail of a snow squall stays a
+/// proper snowfall rather than a few stray flakes.
+const SNOW_MIN_INTENSITY: f32 = 0.6;
+
 fn draw_snow(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState, intensity: f32) {
-    if cols == 0 || intensity <= 0.05 {
+    if cols == 0 || horizon <= 1 || intensity <= 0.05 {
         return;
     }
 
     let cycle = horizon as f32 + 3.0;
-    let fg = blend(rgb(205, 225, 235), rgb(250, 250, 255), intensity);
-    let flakes = ((cols as f32 / 1.6) * intensity.max(0.70)) as usize;
-    for flake in 0..flakes.max(36) {
+    let bright = blend(rgb(205, 225, 235), rgb(250, 250, 255), intensity);
+    let sky_cells = cols * (horizon - 1);
+    let flakes = (sky_cells as f32 * SNOW_DENSITY * intensity.max(SNOW_MIN_INTENSITY)) as usize;
+    for flake in 0..flakes.max(64) {
+        let (speed, drift_width, brightness) = SNOW_LAYERS[flake % SNOW_LAYERS.len()];
         let seed = detail_hash(flake as i32, 0x5A10_2026);
         let x_seed = (seed % cols.max(1) as u32) as i32;
         let offset = (detail_hash(flake as i32, 0xF1A7_2026) % (cycle as u32 * 10)) as f32 / 10.0;
-        let y_float = (sky.elapsed * 1.45 + offset).rem_euclid(cycle) - 2.0;
+        let y_float = (sky.elapsed * speed + offset).rem_euclid(cycle) - 2.0;
         let y = y_float.round() as i32;
         if y < 1 || y >= horizon as i32 {
             continue;
         }
 
-        let drift = ((sky.elapsed * 0.8 + flake as f32 * 0.7 + y_float * 0.4).sin() * 2.0).round();
-        let x = (x_seed + drift as i32).rem_euclid(cols as i32) as usize;
+        let drift = ((sky.elapsed * 0.8 + flake as f32 * 0.7 + y_float * 0.4).sin() * drift_width)
+            .round() as i32;
+        let x = (x_seed + drift).rem_euclid(cols as i32) as usize;
         let i = y as usize * cols + x;
+        // Fat flakes read as close ones, so keep them for the near layer.
+        let fat = if brightness > 0.9 {
+            seed.is_multiple_of(3)
+        } else {
+            seed.is_multiple_of(7)
+        };
         grid[i] = CellFmt {
-            ch: if seed.is_multiple_of(5) { '*' } else { '.' },
-            fg,
+            ch: if fat { '*' } else { '.' },
+            fg: blend(sky.palette.mid, bright, brightness),
             bg: grid[i].bg,
         };
     }
@@ -2368,9 +2394,17 @@ mod tests {
         let cols = 80;
         let horizon = 24;
         let mut grid = vec![BLANK; cols * horizon];
+        let mut rain_grid = vec![BLANK; cols * horizon];
 
         draw_snow(
             &mut grid,
+            cols,
+            horizon,
+            sky_state_with_weather(0.0, 1.0),
+            1.0,
+        );
+        draw_rain(
+            &mut rain_grid,
             cols,
             horizon,
             sky_state_with_weather(0.0, 1.0),
@@ -2381,7 +2415,56 @@ mod tests {
             .iter()
             .filter(|cell| cell.ch == '*' || cell.ch == '.')
             .count();
-        assert!(snow_count >= 30);
+        let rain_count = rain_grid.iter().filter(|cell| cell.ch == '/').count();
+
+        assert!(snow_count >= 150, "snow field was only {snow_count} flakes");
+        assert!(
+            snow_count > rain_count,
+            "snow ({snow_count}) should fill the sky at least as thickly as rain ({rain_count})"
+        );
+    }
+
+    #[test]
+    fn snow_falls_at_several_depths() {
+        let cols = 80;
+        let horizon = 24;
+        let mut early = vec![BLANK; cols * horizon];
+        let mut late = vec![BLANK; cols * horizon];
+
+        draw_snow(
+            &mut early,
+            cols,
+            horizon,
+            sky_state_with_weather(0.0, 1.0),
+            1.0,
+        );
+        draw_snow(
+            &mut late,
+            cols,
+            horizon,
+            sky_state_with_weather(1.0, 1.0),
+            1.0,
+        );
+
+        // Layered fall speeds mean a second of drift rearranges the field
+        // rather than translating it wholesale.
+        let rows_with_snow = |grid: &[CellFmt]| -> Vec<usize> {
+            (0..horizon)
+                .filter(|y| {
+                    grid[y * cols..(y + 1) * cols]
+                        .iter()
+                        .any(|cell| cell.ch == '*' || cell.ch == '.')
+                })
+                .collect()
+        };
+
+        assert!(rows_with_snow(&early).len() >= horizon - 4);
+        assert!(
+            early
+                .iter()
+                .zip(&late)
+                .any(|(a, b)| a.ch != b.ch || a.fg != b.fg)
+        );
     }
 
     #[test]
