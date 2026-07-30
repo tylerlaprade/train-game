@@ -301,7 +301,7 @@ struct TerrainLayer {
     mix: f32,
     color: Color,
     depth: TerrainDepth,
-    scroll: f32,
+    world_offset: i32,
     freq: f32,
     base: f32,
     amp: f32,
@@ -663,8 +663,14 @@ const BLANK: CellFmt = CellFmt {
     fg: Color::Reset,
     bg: Color::Reset,
 };
-const TERRAIN_FAR_SCROLL_FREQ: f32 = 0.026;
-const TERRAIN_NEAR_SCROLL_FREQ: f32 = 0.052;
+const FAR_SCROLL_SCALE: f32 = 0.15;
+const NEAR_SCROLL_SCALE: f32 = 0.4;
+const FOREGROUND_SCROLL_SCALE: f32 = 1.0;
+
+/// Keep simulation distance smooth, but move a rendered depth layer by whole cells.
+fn snapped_scroll_offset(distance: f32, scale: f32) -> i32 {
+    (distance * scale).round() as i32
+}
 
 pub struct Renderer {
     grid: Vec<CellFmt>,
@@ -1174,7 +1180,7 @@ fn draw_terrain(
             mix: biome.mix,
             color: far,
             depth: TerrainDepth::Far,
-            scroll: phase * 0.15 * TERRAIN_FAR_SCROLL_FREQ,
+            world_offset: snapped_scroll_offset(phase, FAR_SCROLL_SCALE),
             freq: biome.far_freq,
             base: biome.far_base,
             amp: biome.far_amp,
@@ -1193,7 +1199,7 @@ fn draw_terrain(
             mix: biome.mix,
             color: near,
             depth: TerrainDepth::Near,
-            scroll: phase * 0.4 * TERRAIN_NEAR_SCROLL_FREQ,
+            world_offset: snapped_scroll_offset(phase, NEAR_SCROLL_SCALE),
             freq: biome.near_freq,
             base: biome.near_base,
             amp: biome.near_amp,
@@ -1216,7 +1222,8 @@ fn draw_terrain_layer(
         return;
     }
     for x in 0..cols {
-        let base_phase = x as f32 * layer.freq + layer.scroll;
+        let world_x = x as i32 + layer.world_offset;
+        let base_phase = world_x as f32 * layer.freq;
         let h = terrain_height(layer, base_phase);
         if h <= 0.0 {
             continue;
@@ -1641,7 +1648,7 @@ fn detail_biome_for_layer_world(world: i32, slot: i32, cols: usize) -> BiomeKind
 }
 
 fn detail_slot(x: usize, phase: f32, spacing: i32) -> Option<i32> {
-    let world = x as i32 + phase.round() as i32;
+    let world = x as i32 + snapped_scroll_offset(phase, FOREGROUND_SCROLL_SCALE);
     if world.rem_euclid(spacing) == 0 {
         Some(world.div_euclid(spacing))
     } else {
@@ -1773,7 +1780,7 @@ fn draw_tumbleweeds(grid: &mut [CellFmt], cols: usize, layer: BiomeDetailLayer, 
             continue;
         }
 
-        let x = (world_x - layer.phase).round() as i32;
+        let x = world_x as i32 - snapped_scroll_offset(layer.phase, FOREGROUND_SCROLL_SCALE);
         if x < -2 || x > cols as i32 + 2 {
             continue;
         }
@@ -1827,7 +1834,7 @@ fn draw_tracks(grid: &mut [CellFmt], cols: usize, rows: usize, top_y: usize, pha
         return;
     }
 
-    let tie_offset = (phase.round() as i32).rem_euclid(12) as usize;
+    let tie_offset = snapped_scroll_offset(phase, FOREGROUND_SCROLL_SCALE).rem_euclid(12) as usize;
     for c in 0..cols {
         let i = top_y * cols + c;
         let tie = (c + tie_offset).is_multiple_of(12);
@@ -2494,6 +2501,59 @@ mod tests {
                 meadow,
                 "{kind:?} reused the meadow terrain shape"
             );
+        }
+    }
+
+    #[test]
+    fn parallax_offsets_snap_once_per_layer() {
+        assert_eq!(snapped_scroll_offset(3.0, FAR_SCROLL_SCALE), 0);
+        assert_eq!(snapped_scroll_offset(4.0, FAR_SCROLL_SCALE), 1);
+        assert_eq!(snapped_scroll_offset(1.0, NEAR_SCROLL_SCALE), 0);
+        assert_eq!(snapped_scroll_offset(2.0, NEAR_SCROLL_SCALE), 1);
+        assert_eq!(snapped_scroll_offset(0.49, FOREGROUND_SCROLL_SCALE), 0);
+        assert_eq!(snapped_scroll_offset(0.51, FOREGROUND_SCROLL_SCALE), 1);
+        assert_eq!(snapped_scroll_offset(-4.0, FAR_SCROLL_SCALE), -1);
+    }
+
+    #[test]
+    fn terrain_layer_moves_as_one_raster() {
+        let cols = 80;
+        let horizon = 18;
+        let layer = TerrainLayer {
+            current_kind: BiomeKind::Mountains,
+            next_kind: BiomeKind::Mountains,
+            mix: 0.0,
+            color: rgb(120, 128, 128),
+            depth: TerrainDepth::Far,
+            world_offset: 12,
+            freq: 0.048,
+            base: 3.0,
+            amp: 5.8,
+            detail_amp: 2.4,
+        };
+        let mut before = vec![BLANK; cols * horizon];
+        let mut after = vec![BLANK; cols * horizon];
+
+        draw_terrain_layer(&mut before, cols, horizon, layer, true);
+        draw_terrain_layer(
+            &mut after,
+            cols,
+            horizon,
+            TerrainLayer {
+                world_offset: layer.world_offset + 1,
+                ..layer
+            },
+            true,
+        );
+
+        assert!(before.iter().zip(&after).any(|(a, b)| a != b));
+        for y in 0..horizon {
+            for x in 0..cols - 1 {
+                assert!(
+                    before[y * cols + x + 1] == after[y * cols + x],
+                    "terrain changed shape at {x},{y}"
+                );
+            }
         }
     }
 
