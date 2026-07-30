@@ -1871,7 +1871,7 @@ fn draw_stars(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState) 
         if y >= horizon {
             continue;
         }
-        let ch = if detail_hash(i as i32, 0x2A2A_2A2A) % 4 == 0 {
+        let ch = if detail_hash(i as i32, 0x2A2A_2A2A).is_multiple_of(4) {
             '*'
         } else {
             '.'
@@ -1912,7 +1912,7 @@ fn draw_rain(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState, i
     for y in 1..horizon {
         for x in (0..cols).step_by(4) {
             let px = (x + ((y * 3 + offset) % 4)) % cols;
-            if (px + y + offset) % 3 != 0 {
+            if !(px + y + offset).is_multiple_of(3) {
                 continue;
             }
             let i = y * cols + px;

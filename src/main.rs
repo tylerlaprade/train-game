@@ -363,10 +363,8 @@ fn handle_key(
         {
             game.advance_time_of_day();
         }
-        KeyCode::Char(ch) => {
-            if unlock.push(ch) {
-                game.quit = true;
-            }
+        KeyCode::Char(ch) if unlock.push(ch) => {
+            game.quit = true;
         }
         _ => {}
     }
