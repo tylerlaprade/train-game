@@ -7,8 +7,13 @@ use std::time::{Duration, Instant};
 use rodio::cpal;
 use rodio::cpal::traits::HostTrait;
 use rodio::source::Spatial;
-use rodio::{Decoder, DeviceSinkBuilder, DeviceTrait, MixerDeviceSink, Player, Source};
+use rodio::{
+    ChannelCount, Decoder, DeviceSinkBuilder, DeviceTrait, MixerDeviceSink, Player, SampleRate,
+    Source,
+};
 
+/// The sound effects, as FLAC. They are decoded once into [`Clips`] when the
+/// audio system starts and never touched by the audio thread in encoded form.
 const CHUGGA: &[u8] = include_bytes!("../assets/chugga.flac");
 const WHISTLE: &[u8] = include_bytes!("../assets/whistle.flac");
 const ANOTHER_WHEEL: &[u8] = include_bytes!("../assets/another_wheel.flac");
@@ -45,6 +50,7 @@ const REOPEN_COOLDOWN: Duration = Duration::from_millis(1500);
 
 pub struct Audio {
     sink: MixerDeviceSink,
+    clips: Clips,
     chugga: Player,
     chugga_playing: bool,
     rain: Player,
@@ -67,6 +73,11 @@ pub struct Audio {
 
 impl Audio {
     pub fn new() -> Option<Self> {
+        Self::open(Clips::decode()?)
+    }
+
+    /// Open the OS audio sink and wire the already-decoded `clips` into it.
+    fn open(clips: Clips) -> Option<Self> {
         let lost = Arc::new(AtomicBool::new(false));
         let mut sink = open_sink(lost.clone())?;
         sink.log_on_drop(false);
@@ -78,10 +89,7 @@ impl Audio {
         });
 
         let chugga = Player::connect_new(sink.mixer());
-        let source = Decoder::try_from(Cursor::new(CHUGGA))
-            .ok()?
-            .repeat_infinite();
-        chugga.append(spatialize(source, pan.clone()));
+        chugga.append(spatialize(clips.chugga.looped(), pan.clone()));
         // The spatial pan attenuates each channel to ~0.75 at center, so the
         // volumes are bumped from their old mono values (chug 0.7, horn 1.0)
         // to keep roughly the original loudness.
@@ -99,6 +107,7 @@ impl Audio {
         let now = Instant::now();
         Some(Self {
             sink,
+            clips,
             chugga,
             chugga_playing: false,
             rain,
@@ -150,14 +159,12 @@ impl Audio {
         if !self.horn.empty() {
             return;
         }
-        let Ok(source) = Decoder::try_from(Cursor::new(WHISTLE)) else {
-            return;
-        };
-        self.horn.append(spatialize(source, self.pan.clone()));
+        self.horn
+            .append(spatialize(self.clips.whistle.once(), self.pan.clone()));
     }
 
     pub fn another_wheel(&mut self) {
-        self.play_oneshot(ANOTHER_WHEEL, 1.0);
+        self.play_oneshot(self.clips.another_wheel.once(), 1.0);
     }
 
     /// Reopen the OS audio sink if it has stopped playing.
@@ -178,7 +185,8 @@ impl Audio {
         }
         self.last_reopen = now;
 
-        let Some(mut fresh) = Audio::new() else {
+        // The clips are already decoded; only the sink needs rebuilding.
+        let Some(mut fresh) = Audio::open(self.clips.clone()) else {
             return;
         };
         // Carry the mixing state across so the rebuild is inaudible beyond the
@@ -209,10 +217,7 @@ impl Audio {
         looks_stalled(advanced, since)
     }
 
-    fn play_oneshot(&self, data: &'static [u8], volume: f32) {
-        let Ok(source) = Decoder::try_from(Cursor::new(data)) else {
-            return;
-        };
+    fn play_oneshot(&self, source: ClipSource, volume: f32) {
         let player = Player::connect_new(self.sink.mixer());
         player.set_volume(volume);
         player.append(source);
@@ -283,6 +288,138 @@ where
 /// Emitter position for a given pan, sliding along the ear axis.
 fn emitter(pan: f32) -> [f32; 3] {
     [pan, 0.0, 0.0]
+}
+
+/// Every sound effect, fully decoded and ready to play.
+///
+/// Decoding happens here, on the main thread, before the game starts. It must
+/// not happen on the audio thread: rodio's `Decoder` (and the `Buffered` that
+/// `repeat_infinite` silently wraps it in) decode FLAC blocks and allocate
+/// fresh 32k-sample buffers from inside the real-time callback the first time
+/// through a track. On a machine without much headroom each of those stalls
+/// the callback past its deadline and comes out of the speakers as a crackle —
+/// once every buffer, for exactly one loop of the 42-second chug, after which
+/// everything is cached and the crackle vanishes. Pre-decoding leaves the
+/// callback nothing to do but copy samples.
+///
+/// Cloning is cheap: each clip is an `Arc` over its samples, so a rebuilt sink
+/// (see [`Audio::recover_if_stalled`]) reuses the same memory.
+#[derive(Clone)]
+struct Clips {
+    chugga: Clip,
+    whistle: Clip,
+    another_wheel: Clip,
+}
+
+impl Clips {
+    fn decode() -> Option<Self> {
+        Some(Self {
+            chugga: Clip::decode(CHUGGA)?,
+            whistle: Clip::decode(WHISTLE)?,
+            another_wheel: Clip::decode(ANOTHER_WHEEL)?,
+        })
+    }
+}
+
+/// One decoded sound: interleaved `f32` samples plus the layout needed to
+/// play them back.
+#[derive(Clone)]
+struct Clip {
+    samples: Arc<[f32]>,
+    channels: ChannelCount,
+    sample_rate: SampleRate,
+}
+
+impl Clip {
+    fn decode(flac: &'static [u8]) -> Option<Self> {
+        let decoder = Decoder::try_from(Cursor::new(flac)).ok()?;
+        let channels = decoder.channels();
+        let sample_rate = decoder.sample_rate();
+        let samples: Vec<f32> = decoder.collect();
+        if samples.is_empty() {
+            return None;
+        }
+        Some(Self {
+            samples: samples.into(),
+            channels,
+            sample_rate,
+        })
+    }
+
+    /// Play the clip through once, then end.
+    fn once(&self) -> ClipSource {
+        ClipSource {
+            clip: self.clone(),
+            pos: 0,
+            looping: false,
+        }
+    }
+
+    /// Play the clip forever, wrapping straight from the last sample to the
+    /// first with no gap, exactly as `repeat_infinite` would.
+    fn looped(&self) -> ClipSource {
+        ClipSource {
+            clip: self.clone(),
+            pos: 0,
+            looping: true,
+        }
+    }
+
+    fn duration(&self) -> Duration {
+        let frames = self.samples.len() as u64 / u64::from(self.channels.get());
+        Duration::from_secs_f64(frames as f64 / f64::from(self.sample_rate.get()))
+    }
+}
+
+/// A [`Source`] that reads a [`Clip`] out of memory. Its `next` is a bounds
+/// check and a copy, which is all the audio thread should ever have to do.
+struct ClipSource {
+    clip: Clip,
+    pos: usize,
+    looping: bool,
+}
+
+impl Iterator for ClipSource {
+    type Item = f32;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.clip.samples.len() {
+            if !self.looping {
+                return None;
+            }
+            self.pos = 0;
+        }
+        let sample = self.clip.samples[self.pos];
+        self.pos += 1;
+        Some(sample)
+    }
+}
+
+impl Source for ClipSource {
+    fn current_span_len(&self) -> Option<usize> {
+        if self.looping {
+            None
+        } else {
+            Some(self.clip.samples.len() - self.pos.min(self.clip.samples.len()))
+        }
+    }
+
+    fn channels(&self) -> ChannelCount {
+        self.clip.channels
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        self.clip.sample_rate
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        if self.looping {
+            None
+        } else {
+            Some(self.clip.duration())
+        }
+    }
 }
 
 /// A silent, endless source that counts how many samples the OS has pulled
@@ -376,10 +513,82 @@ impl Source for RainNoise {
 
 #[cfg(test)]
 mod tests {
-    use super::{HEARTBEAT_RATE, Heartbeat, looks_stalled};
+    use super::{
+        ANOTHER_WHEEL, CHUGGA, Clip, Clips, HEARTBEAT_RATE, Heartbeat, WHISTLE, looks_stalled,
+    };
+    use rodio::Source;
+    use std::num::{NonZeroU16, NonZeroU32};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    fn clip(samples: &[f32]) -> Clip {
+        Clip {
+            samples: samples.into(),
+            channels: NonZeroU16::new(1).unwrap(),
+            sample_rate: NonZeroU32::new(4).unwrap(),
+        }
+    }
+
+    #[test]
+    fn a_one_shot_clip_plays_through_once_and_ends() {
+        let mut source = clip(&[0.1, 0.2, 0.3]).once();
+
+        assert_eq!(source.current_span_len(), Some(3));
+        assert_eq!(source.total_duration(), Some(Duration::from_millis(750)));
+        assert_eq!(source.next(), Some(0.1));
+        assert_eq!(source.current_span_len(), Some(2));
+        assert_eq!(source.next(), Some(0.2));
+        assert_eq!(source.next(), Some(0.3));
+        assert_eq!(source.next(), None);
+        assert_eq!(source.next(), None);
+        assert_eq!(source.current_span_len(), Some(0));
+    }
+
+    #[test]
+    fn a_looped_clip_wraps_without_a_gap() {
+        let mut source = clip(&[0.1, 0.2, 0.3]).looped();
+
+        assert_eq!(source.current_span_len(), None);
+        assert_eq!(source.total_duration(), None);
+        let heard: Vec<f32> = source.by_ref().take(7).collect();
+        assert_eq!(heard, [0.1, 0.2, 0.3, 0.1, 0.2, 0.3, 0.1]);
+    }
+
+    #[test]
+    fn the_bundled_sounds_decode() {
+        let clips = Clips::decode().expect("bundled FLAC assets decode");
+
+        for (name, clip, flac) in [
+            ("chugga", &clips.chugga, CHUGGA),
+            ("whistle", &clips.whistle, WHISTLE),
+            ("another_wheel", &clips.another_wheel, ANOTHER_WHEEL),
+        ] {
+            assert!(!clip.samples.is_empty(), "{name} decoded to nothing");
+            // Decoding must have gone all the way through the file, not just
+            // its first block: a real clip is far longer than its FLAC.
+            assert!(
+                clip.samples.len() > flac.len() / 4,
+                "{name}: {} samples from {} bytes",
+                clip.samples.len(),
+                flac.len()
+            );
+        }
+        assert!(clips.chugga.duration() > Duration::from_secs(30));
+        assert!(clips.whistle.duration() < Duration::from_secs(5));
+    }
+
+    #[test]
+    #[ignore = "timing probe; run with --ignored --nocapture"]
+    fn decode_timing() {
+        let start = Instant::now();
+        let clips = Clips::decode().unwrap();
+        eprintln!(
+            "decoded {:.1}s of chug in {:?}",
+            clips.chugga.duration().as_secs_f32(),
+            start.elapsed()
+        );
+    }
 
     #[test]
     fn a_running_device_is_not_reported_as_stalled() {
