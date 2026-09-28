@@ -89,12 +89,19 @@ impl InputState {
     }
 
     fn direction(&self) -> Option<Direction> {
-        match self.last_direction {
-            Some(Direction::Forward) if self.forward_held => Some(Direction::Forward),
-            Some(Direction::Backward) if self.backward_held => Some(Direction::Backward),
-            _ if self.forward_held => Some(Direction::Forward),
-            _ if self.backward_held => Some(Direction::Backward),
-            _ => None,
+        self.last_direction
+            .filter(|&direction| self.is_held(direction))
+            .or_else(|| {
+                [Direction::Forward, Direction::Backward]
+                    .into_iter()
+                    .find(|&direction| self.is_held(direction))
+            })
+    }
+
+    fn is_held(&self, direction: Direction) -> bool {
+        match direction {
+            Direction::Forward => self.forward_held,
+            Direction::Backward => self.backward_held,
         }
     }
 

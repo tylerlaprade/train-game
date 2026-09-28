@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::io::Write;
 
 use crossterm::cursor;
@@ -839,7 +840,7 @@ fn truecolor_supported() -> bool {
 }
 
 fn truecolor_supported_for(colorterm: Option<&str>) -> bool {
-    matches!(colorterm, Some("truecolor") | Some("24bit"))
+    matches!(colorterm, Some("truecolor" | "24bit"))
 }
 
 fn smooth_block_glyphs_supported() -> bool {
@@ -1067,18 +1068,20 @@ fn draw_sky(
     let ground_dark = biome_lit(biome.ground_dark, sky.palette.ground_dark);
 
     for r in 0..rows {
-        let bg = if r < horizon {
-            let depth = r as f32 / horizon.max(1) as f32;
-            if depth < 0.58 {
-                blend(sky.palette.top, sky.palette.mid, depth / 0.58)
-            } else {
-                blend(sky.palette.mid, sky.palette.horizon, (depth - 0.58) / 0.42)
+        let bg = match r.cmp(&horizon) {
+            Ordering::Less => {
+                let depth = r as f32 / horizon.max(1) as f32;
+                if depth < 0.58 {
+                    blend(sky.palette.top, sky.palette.mid, depth / 0.58)
+                } else {
+                    blend(sky.palette.mid, sky.palette.horizon, (depth - 0.58) / 0.42)
+                }
             }
-        } else if r == horizon {
-            ground
-        } else {
-            let depth = (r - horizon) as f32 / (rows - horizon).max(1) as f32;
-            blend(ground, ground_dark, depth)
+            Ordering::Equal => ground,
+            Ordering::Greater => {
+                let depth = (r - horizon) as f32 / (rows - horizon).max(1) as f32;
+                blend(ground, ground_dark, depth)
+            }
         };
         for c in 0..cols {
             grid[r * cols + c] = CellFmt {
@@ -2075,12 +2078,7 @@ fn char_visual(ch: char, base: Color, bg: Color) -> Option<CellFmt> {
             fg: Color::Black,
             bg,
         }),
-        '(' | ')' | '{' | '}' | '#' | '-' => Some(CellFmt {
-            ch,
-            fg: UNDERCARRIAGE,
-            bg,
-        }),
-        '=' => Some(CellFmt {
+        '(' | ')' | '{' | '}' | '#' | '-' | '=' => Some(CellFmt {
             ch,
             fg: UNDERCARRIAGE,
             bg,
