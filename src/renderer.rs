@@ -2277,7 +2277,6 @@ fn draw_top_bar(grid: &mut [CellFmt], cols: usize, rows: usize, game: &Game, sky
     }
 }
 
-#[allow(dead_code)]
 pub fn debug_check_sprite_widths() {
     for (name, sprite) in [
         ("ENGINE", &ENGINE),
