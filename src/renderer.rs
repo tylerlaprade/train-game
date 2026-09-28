@@ -826,7 +826,7 @@ fn rgb_of(c: Color) -> (u8, u8, u8) {
 }
 
 fn lerp(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t).round() as u8
+    (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8
 }
 
 fn rgb(r: u8, g: u8, b: u8) -> Color {
@@ -859,14 +859,14 @@ fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
         LEVELS
             .iter()
             .enumerate()
-            .min_by_key(|&(_, &lvl)| (v as i32 - lvl as i32).abs())
+            .min_by_key(|&(_, &lvl)| v.abs_diff(lvl))
             .map(|(i, _)| i)
             .unwrap()
     };
-    let dist = |a: (u8, u8, u8), x: u8, y: u8, z: u8| -> i32 {
-        let dr = a.0 as i32 - x as i32;
-        let dg = a.1 as i32 - y as i32;
-        let db = a.2 as i32 - z as i32;
+    let dist = |a: (u8, u8, u8), x: u8, y: u8, z: u8| -> u32 {
+        let dr = u32::from(a.0.abs_diff(x));
+        let dg = u32::from(a.1.abs_diff(y));
+        let db = u32::from(a.2.abs_diff(z));
         dr * dr + dg * dg + db * db
     };
 
@@ -880,7 +880,7 @@ fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
     let chroma = r.max(g).max(b) - r.min(g).min(b);
     if chroma <= 16 {
         // Grayscale ramp values run 8, 18, .. 238 at indices 232..=255.
-        let avg = (r as u32 + g as u32 + b as u32) / 3;
+        let avg = (u32::from(r) + u32::from(g) + u32::from(b)) / 3;
         let gray_idx = (((avg as i32 - 8) + 5) / 10).clamp(0, 23) as u8;
         let gray_val = 8 + gray_idx * 10;
         if dist((gray_val, gray_val, gray_val), r, g, b) < dist(cube, r, g, b) {
@@ -2118,7 +2118,7 @@ fn char_visual(ch: char, base: Color, bg: Color) -> Option<CellFmt> {
 
 fn contrast_color(base: Color) -> Color {
     let (r, g, b) = rgb_of(base);
-    let luminance = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
+    let luminance = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
     if luminance > 150.0 {
         Color::Black
     } else {

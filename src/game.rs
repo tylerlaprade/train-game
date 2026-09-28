@@ -231,7 +231,7 @@ impl Game {
     /// engine copy is nearest the screen, so the sound re-enters from the left
     /// once the engine slides off the right edge.
     pub fn engine_pan(&self) -> f32 {
-        let cols = self.screen_cols.max(1) as f32;
+        let cols = f32::from(self.screen_cols.max(1));
         let half_engine = (crate::renderer::ENGINE.width as f32 - 1.0) / 2.0;
         let center = self.head_x - half_engine;
         let cycle = self.cycle().max(1) as f32;
@@ -371,7 +371,7 @@ impl Game {
             let left = right - w + 1;
             if i == idx {
                 let cycle = self.cycle();
-                let screen = self.screen_cols as i32;
+                let screen = i32::from(self.screen_cols);
                 for shift in [-cycle, 0, cycle] {
                     let l = left + shift;
                     let r = right + shift;
@@ -488,7 +488,7 @@ mod tests {
         let caboose_right_at_wrap = game.cycle() - engine_w - 3 * car_w;
         assert_eq!(
             caboose_right_at_wrap,
-            game.screen_cols as i32 - 1 + half_caboose,
+            i32::from(game.screen_cols) - 1 + half_caboose,
             "caboose should be half off the right edge at the wrap moment",
         );
     }
