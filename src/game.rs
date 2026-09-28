@@ -250,7 +250,10 @@ impl Game {
     /// car can be added on a wrap event but the announcement is deferred
     /// until the new car is actually visible on screen (see `unannounced_car`).
     pub fn tick(&mut self) -> u32 {
-        let now = Instant::now();
+        self.tick_at(Instant::now())
+    }
+
+    fn tick_at(&mut self, now: Instant) -> u32 {
         let dt = now.duration_since(self.last_tick).as_secs_f32().min(0.1);
         self.last_tick = now;
 
@@ -466,7 +469,7 @@ mod tests {
         BIOME_BLEND_START_DISTANCE, BIOME_DEBUG_SKIP_MARGIN, BIOME_TRANSITION_DISTANCE,
         TRAIN_SPEED_CELLS_PER_SEC,
     };
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     #[test]
     fn cycle_aligns_new_engine_with_caboose_half_off_right() {
@@ -523,9 +526,8 @@ mod tests {
 
         game.head_x = 0.1;
         game.velocity = -TRAIN_SPEED_CELLS_PER_SEC;
-        game.last_tick = Instant::now() - Duration::from_secs(1);
 
-        assert_eq!(game.tick(), 0);
+        assert_eq!(game.tick_at(game.last_tick + Duration::from_secs(1)), 0);
         assert_eq!(game.cars.len(), 0);
     }
 
@@ -536,9 +538,8 @@ mod tests {
         game.head_x = (game.cycle() - 1) as f32;
         game.distance_traveled = game.cycle() as f32 - 1.0;
         game.velocity = TRAIN_SPEED_CELLS_PER_SEC;
-        game.last_tick = Instant::now() - Duration::from_secs(1);
 
-        let announced = game.tick();
+        let announced = game.tick_at(game.last_tick + Duration::from_secs(1));
         assert_eq!(game.cars.len(), 1);
         assert_eq!(
             announced, 0,
@@ -553,8 +554,7 @@ mod tests {
         game.head_x = (game.cycle() - 1) as f32;
         game.distance_traveled = game.cycle() as f32 - 1.0;
         game.velocity = TRAIN_SPEED_CELLS_PER_SEC;
-        game.last_tick = Instant::now() - Duration::from_secs(1);
-        assert_eq!(game.tick(), 0);
+        assert_eq!(game.tick_at(game.last_tick + Duration::from_secs(1)), 0);
         assert_eq!(game.unannounced_car, Some(0));
 
         game.velocity = 0.0;

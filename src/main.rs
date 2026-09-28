@@ -283,9 +283,8 @@ fn run(
         }
         renderer.render(game, stdout)?;
 
-        let elapsed = last_frame.elapsed();
-        if elapsed < FRAME_DURATION {
-            let remaining = FRAME_DURATION - elapsed;
+        let remaining = FRAME_DURATION.saturating_sub(last_frame.elapsed());
+        if !remaining.is_zero() {
             let _ = event::poll(remaining)?;
         }
         last_frame = Instant::now();
