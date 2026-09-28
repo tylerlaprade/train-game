@@ -2325,19 +2325,19 @@ mod tests {
 
         assert_eq!(start_current.kind, BiomeKind::Meadow);
         assert_eq!(start_next.kind, BiomeKind::Forest);
-        assert_eq!(start_mix, 0.0);
+        assert!(start_mix.abs() < f32::EPSILON);
         assert_eq!(half_current.kind, BiomeKind::Meadow);
         assert_eq!(half_next.kind, BiomeKind::Forest);
-        assert_eq!(half_mix, 0.0);
+        assert!(half_mix.abs() < f32::EPSILON);
         assert_eq!(blend_start_current.kind, BiomeKind::Meadow);
         assert_eq!(blend_start_next.kind, BiomeKind::Forest);
-        assert_eq!(blend_start_mix, 0.0);
+        assert!(blend_start_mix.abs() < f32::EPSILON);
         assert_eq!(blend_mid_current.kind, BiomeKind::Meadow);
         assert_eq!(blend_mid_next.kind, BiomeKind::Forest);
         assert!((blend_mid_mix - 0.5).abs() < f32::EPSILON);
         assert_eq!(next_current.kind, BiomeKind::Forest);
         assert_eq!(next_next.kind, BiomeKind::Mountains);
-        assert_eq!(next_mix, 0.0);
+        assert!(next_mix.abs() < f32::EPSILON);
     }
 
     #[test]
@@ -2359,7 +2359,7 @@ mod tests {
         assert_eq!(tundra_blend.kind, PrecipitationKind::Snow);
         assert_eq!(tundra.kind, PrecipitationKind::Snow);
         assert_eq!(leaving_tundra.kind, PrecipitationKind::Snow);
-        assert_eq!(tundra.rain_audio_intensity(), 0.0);
+        assert!(tundra.rain_audio_intensity().abs() < f32::EPSILON);
     }
 
     #[test]
