@@ -169,8 +169,8 @@ impl Audio {
 
     /// Reopen the OS audio sink if it has stopped playing.
     ///
-    /// Closing a MacBook lid tears down the CoreAudio device behind our
-    /// stream. The stream object stays alive and rodio keeps happily mixing
+    /// Closing the lid of a Mac laptop tears down the `CoreAudio` device behind
+    /// our stream. The stream object stays alive and rodio keeps happily mixing
     /// into it, but nothing is ever pulled out again, so the game goes silent
     /// until it is restarted. Rebuilding the sink is the only way back, so the
     /// main loop calls this every frame and we watch the [`Heartbeat`] counter
@@ -259,8 +259,7 @@ fn open_sink(lost: Arc<AtomicBool>) -> Option<MixerDeviceSink> {
         .filter(|device| {
             device
                 .description()
-                .map(|desc| desc.driver().is_some_and(|driver| driver != "null"))
-                .unwrap_or(false)
+                .is_ok_and(|desc| desc.driver().is_some_and(|driver| driver != "null"))
         })
         .find_map(|device| {
             DeviceSinkBuilder::from_device(device)
@@ -605,7 +604,7 @@ mod tests {
         // What a closed lid looks like: the stream is still there, but nothing
         // comes out of it no matter how long we wait.
         assert!(looks_stalled(0, Duration::from_millis(400)));
-        assert!(looks_stalled(0, Duration::from_secs(600)));
+        assert!(looks_stalled(0, Duration::from_mins(10)));
         // A stream that dies part-way through the window counts too.
         assert!(looks_stalled(
             u64::from(HEARTBEAT_RATE) / 20,
