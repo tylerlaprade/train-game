@@ -647,6 +647,7 @@ pub enum PrecipitationKind {
 #[derive(Clone, Copy, Debug)]
 pub struct WeatherState {
     pub intensity: f32,
+    pub precipitation_intensity: f32,
     pub kind: PrecipitationKind,
 }
 
@@ -968,10 +969,23 @@ fn sky_state_with_weather(elapsed: f32, weather_intensity: f32) -> SkyState {
 
 pub fn weather_state(distance: f32, weather_elapsed: f32) -> WeatherState {
     let (current, next, mix) = biome_transition(distance);
+    let intensity = weather_intensity(weather_elapsed);
+    let tundra_fraction = if current.kind == BiomeKind::Tundra {
+        1.0 - mix
+    } else if next.kind == BiomeKind::Tundra {
+        mix
+    } else {
+        0.0
+    };
     WeatherState {
-        intensity: weather_intensity(weather_elapsed),
-        kind: if current.kind == BiomeKind::Tundra || (next.kind == BiomeKind::Tundra && mix > 0.0)
-        {
+        intensity,
+        precipitation_intensity: if tundra_fraction > 0.0 {
+            let base_snow = tundra_fraction * SNOW_BASE_INTENSITY;
+            base_snow + (1.0 - base_snow) * intensity
+        } else {
+            intensity
+        },
+        kind: if tundra_fraction > 0.0 {
             PrecipitationKind::Snow
         } else {
             PrecipitationKind::Rain
@@ -1895,13 +1909,31 @@ fn draw_precipitation(
     sky: SkyState,
     weather: WeatherState,
 ) {
-    if weather.intensity <= 0.05 {
+    if weather.precipitation_intensity <= 0.0 {
         return;
     }
 
     match weather.kind {
-        PrecipitationKind::Rain => draw_rain(grid, cols, horizon, sky, weather.intensity),
-        PrecipitationKind::Snow => draw_snow(grid, cols, horizon, sky, weather.intensity),
+        PrecipitationKind::Rain => {
+            draw_rain(grid, cols, horizon, sky, weather.precipitation_intensity);
+        }
+        PrecipitationKind::Snow => {
+            draw_snow(
+                grid,
+                cols,
+                horizon,
+                sky,
+                weather.precipitation_intensity,
+                weather.intensity,
+            );
+            draw_snow_gusts(
+                grid,
+                cols,
+                horizon,
+                sky,
+                weather.intensity * weather.precipitation_intensity,
+            );
+        }
     }
 }
 
@@ -1941,20 +1973,25 @@ const SNOW_LAYERS: [(f32, f32, f32); 3] = [(0.85, 1.2, 0.42), (1.45, 2.2, 0.74),
 /// twos.
 const SNOW_DENSITY: f32 = 0.20;
 
-/// Floor on the density multiplier, so even the tail of a snow squall stays a
-/// proper snowfall rather than a few stray flakes.
-const SNOW_MIN_INTENSITY: f32 = 0.6;
+const SNOW_BASE_INTENSITY: f32 = 0.35;
 
-fn draw_snow(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState, intensity: f32) {
-    if cols == 0 || horizon <= 1 || intensity <= 0.05 {
+fn draw_snow(
+    grid: &mut [CellFmt],
+    cols: usize,
+    horizon: usize,
+    sky: SkyState,
+    intensity: f32,
+    wind: f32,
+) {
+    if cols == 0 || horizon <= 1 || intensity <= 0.0 {
         return;
     }
 
     let cycle = horizon as f32 + 3.0;
     let bright = blend(rgb(205, 225, 235), rgb(250, 250, 255), intensity);
     let sky_cells = cols * (horizon - 1);
-    let flakes = (sky_cells as f32 * SNOW_DENSITY * intensity.max(SNOW_MIN_INTENSITY)) as usize;
-    for flake in 0..flakes.max(64) {
+    let flakes = (sky_cells as f32 * SNOW_DENSITY * intensity) as usize;
+    for flake in 0..flakes {
         let (speed, drift_width, brightness) = SNOW_LAYERS[flake % SNOW_LAYERS.len()];
         let seed = detail_hash(flake as i32, 0x5A10_2026);
         let x_seed = (seed % cols.max(1) as u32) as i32;
@@ -1965,8 +2002,11 @@ fn draw_snow(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState, i
             continue;
         }
 
-        let drift = ((sky.elapsed * 0.8 + flake as f32 * 0.7 + y_float * 0.4).sin() * drift_width)
-            .round() as i32;
+        let breeze = (sky.elapsed * 0.8 + flake as f32 * 0.7 + y_float * 0.4).sin()
+            * drift_width
+            * (1.0 + wind * 2.0);
+        let gust = y_float * wind * (2.5 + (sky.elapsed * 0.9).sin() * 1.5);
+        let drift = (breeze + gust).round() as i32;
         let x = (x_seed + drift).rem_euclid(cols as i32) as usize;
         let i = y as usize * cols + x;
         // Fat flakes read as close ones, so keep them for the near layer.
@@ -1980,6 +2020,40 @@ fn draw_snow(grid: &mut [CellFmt], cols: usize, horizon: usize, sky: SkyState, i
             fg: blend(sky.palette.mid, bright, brightness),
             bg: grid[i].bg,
         };
+    }
+}
+
+fn draw_snow_gusts(
+    grid: &mut [CellFmt],
+    cols: usize,
+    horizon: usize,
+    sky: SkyState,
+    intensity: f32,
+) {
+    if cols == 0 || horizon <= 2 || intensity <= 0.05 {
+        return;
+    }
+
+    let fg = blend(sky.palette.mid, rgb(220, 235, 245), intensity * 0.65);
+    let width = (12.0 * intensity) as usize;
+    for gust in 0..3 {
+        let phase = sky.elapsed * 0.35 + gust as f32 / 3.0;
+        let x = (phase.fract() * (cols + 16) as f32) as i32 - 16;
+        let row = 1 + (gust + 1) * (horizon - 2) / 4;
+        for stroke in 0..width {
+            let px = x + stroke as i32;
+            if px < 0 || px >= cols as i32 {
+                continue;
+            }
+            let y = row
+                + usize::from((phase * std::f32::consts::TAU + stroke as f32 * 0.3).sin() > 0.5);
+            let i = y * cols + px as usize;
+            grid[i] = CellFmt {
+                ch: if stroke + 1 == width { '~' } else { '─' },
+                fg,
+                bg: grid[i].bg,
+            };
+        }
     }
 }
 
@@ -2374,6 +2448,114 @@ mod tests {
     }
 
     #[test]
+    fn tundra_has_continuous_snow_without_overcast_or_rain_audio() {
+        let tundra = weather_state(BIOME_TRANSITION_DISTANCE * 5.0, 0.0);
+        let meadow = weather_state(0.0, 0.0);
+
+        assert_eq!(tundra.kind, PrecipitationKind::Snow);
+        assert!((tundra.precipitation_intensity - SNOW_BASE_INTENSITY).abs() < f32::EPSILON);
+        assert!(tundra.intensity.abs() < f32::EPSILON);
+        assert!(tundra.rain_audio_intensity().abs() < f32::EPSILON);
+        assert!(meadow.precipitation_intensity.abs() < f32::EPSILON);
+
+        let mut grid = vec![BLANK; 80 * 24];
+        draw_precipitation(&mut grid, 80, 24, sky_state_with_weather(0.0, 0.0), tundra);
+        assert!(
+            grid.iter()
+                .filter(|cell| cell.ch == '*' || cell.ch == '.')
+                .count()
+                > 50
+        );
+        assert!(!grid.iter().any(|cell| cell.ch == '─' || cell.ch == '~'));
+    }
+
+    #[test]
+    fn ambient_snow_fades_with_the_tundra_transition() {
+        let entering = BIOME_TRANSITION_DISTANCE * 4.0 + BIOME_BLEND_START_DISTANCE;
+        let leaving = BIOME_TRANSITION_DISTANCE * 5.0 + BIOME_BLEND_START_DISTANCE;
+        let blend_half = BIOME_TRANSITION_DISTANCE * BIOME_BLEND_FRACTION * 0.5;
+        let incoming = weather_state(entering + blend_half, 0.0);
+        let outgoing = weather_state(leaving + blend_half, 0.0);
+
+        assert!(weather_state(entering, 0.0).precipitation_intensity.abs() < f32::EPSILON);
+        assert!(
+            (incoming.precipitation_intensity - SNOW_BASE_INTENSITY * 0.5).abs() < f32::EPSILON
+        );
+        assert!(
+            (outgoing.precipitation_intensity - incoming.precipitation_intensity).abs()
+                < f32::EPSILON
+        );
+        assert!(
+            weather_state(BIOME_TRANSITION_DISTANCE * 6.0, 0.0)
+                .precipitation_intensity
+                .abs()
+                < f32::EPSILON
+        );
+    }
+
+    #[test]
+    fn tundra_storms_add_heavier_snow_and_animated_gusts() {
+        let cols = 80;
+        let horizon = 24;
+        let distance = BIOME_TRANSITION_DISTANCE * 5.0;
+        let calm = weather_state(distance, 0.0);
+        let storm = weather_state(distance, WEATHER_CYCLE_SECS * WEATHER_EVENT_PHASE);
+        let sky = sky_state_with_weather(0.0, 0.0);
+        let mut calm_grid = vec![BLANK; cols * horizon];
+        let mut storm_grid = calm_grid.clone();
+        draw_precipitation(&mut calm_grid, cols, horizon, sky, calm);
+        draw_precipitation(&mut storm_grid, cols, horizon, sky, storm);
+
+        let flakes = |grid: &[CellFmt]| {
+            grid.iter()
+                .filter(|cell| cell.ch == '*' || cell.ch == '.')
+                .count()
+        };
+        assert!(flakes(&storm_grid) > flakes(&calm_grid) * 2);
+        assert!(storm_grid.iter().any(|cell| cell.ch == '─'));
+
+        let mut early_gusts = vec![BLANK; cols * horizon];
+        let mut later_gusts = early_gusts.clone();
+        draw_snow_gusts(&mut early_gusts, cols, horizon, sky, 1.0);
+        draw_snow_gusts(
+            &mut later_gusts,
+            cols,
+            horizon,
+            sky_state_with_weather(1.0, 0.0),
+            1.0,
+        );
+        assert!(early_gusts != later_gusts);
+        assert!(early_gusts[..cols].iter().all(|cell| cell.ch == ' '));
+        assert!(
+            early_gusts[(horizon - 1) * cols..]
+                .iter()
+                .all(|cell| cell.ch == ' ')
+        );
+
+        let mut quiet_gusts = vec![BLANK; cols * horizon];
+        draw_snow_gusts(&mut quiet_gusts, cols, horizon, sky, 0.0);
+        assert!(quiet_gusts.iter().all(|cell| cell.ch == ' '));
+    }
+
+    #[test]
+    fn storm_wind_changes_the_snow_trajectory() {
+        let cols = 80;
+        let horizon = 24;
+        let sky = sky_state_with_weather(1.0, 0.0);
+        let mut calm = vec![BLANK; cols * horizon];
+        let mut windy = calm.clone();
+        draw_snow(&mut calm, cols, horizon, sky, 1.0, 0.0);
+        draw_snow(&mut windy, cols, horizon, sky, 1.0, 1.0);
+        assert!(calm != windy);
+
+        for (cols, horizon) in [(0, 0), (1, 1), (1, 2), (2, 3)] {
+            let mut tiny = vec![BLANK; cols * horizon];
+            draw_snow(&mut tiny, cols, horizon, sky, 1.0, 1.0);
+            draw_snow_gusts(&mut tiny, cols, horizon, sky, 1.0);
+        }
+    }
+
+    #[test]
     fn rain_uses_slash_drop_field() {
         let cols = 80;
         let horizon = 24;
@@ -2405,6 +2587,7 @@ mod tests {
             cols,
             horizon,
             sky_state_with_weather(0.0, 1.0),
+            1.0,
             1.0,
         );
         draw_rain(
@@ -2441,12 +2624,14 @@ mod tests {
             horizon,
             sky_state_with_weather(0.0, 1.0),
             1.0,
+            1.0,
         );
         draw_snow(
             &mut late,
             cols,
             horizon,
             sky_state_with_weather(1.0, 1.0),
+            1.0,
             1.0,
         );
 

@@ -6,6 +6,9 @@ A side-scrolling terminal steam train for toddlers.
 - **Spacebar** — toot the horn
 - Type `quit` or `exit` — quit
 
+The tundra biome always has gently falling snow. Weather events bring heavier,
+windblown snowfall and animated gusts; other biomes keep their periodic rain.
+
 <img width="1440" height="900" alt="image" src="https://github.com/user-attachments/assets/ac1c141e-e1c8-4181-a36c-02134198826d" />
 
 <img width="1440" height="900" alt="image" src="https://github.com/user-attachments/assets/93b71633-24cb-4604-b098-1b945824fd98" />
